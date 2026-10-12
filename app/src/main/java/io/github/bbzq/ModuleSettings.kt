@@ -56,6 +56,9 @@ object ModuleSettings {
     const val KEY_CDN_SPEED_TEST_WARMUP_MB = "cdn_speed_test_warmup_mb"
     const val KEY_CDN_SPEED_TEST_COOLDOWN_SEC = "cdn_speed_test_cooldown_sec"
     const val KEY_CDN_SPEED_TEST_PARALLEL = "cdn_speed_test_parallel"
+
+    /** MBGTEB 移植：关闭 IJK 播放器的 P2P / PCDN。 */
+    const val KEY_P2P_DISABLE_ENABLED = "p2p_disable_enabled"
     const val MAX_CDN_PRIORITY_NODES = 5
     const val KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED = "purify_home_recommend_ad_enabled"
     const val KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED = "purify_home_recommend_picture_enabled"
@@ -309,6 +312,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_CDN_CELLULAR_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CDN_CELLULAR_ENABLED, false) },
         ExportableConfigSpec(KEY_CDN_AUDIO_INDEPENDENT, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CDN_AUDIO_INDEPENDENT, false) },
         ExportableConfigSpec(KEY_CDN_SPEED_TEST_PARALLEL, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CDN_SPEED_TEST_PARALLEL, true) },
+        ExportableConfigSpec(KEY_P2P_DISABLE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_P2P_DISABLE_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, false) },
@@ -715,6 +719,9 @@ object ModuleSettings {
 
     fun isCdnSpeedTestParallel(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CDN_SPEED_TEST_PARALLEL, true)
+
+    fun isP2pDisableEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_P2P_DISABLE_ENABLED, false)
 
     fun getHomeRecommendTitleKeywordsText(prefs: SharedPreferences): String =
         prefs.getString(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, "").orEmpty()

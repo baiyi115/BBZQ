@@ -190,6 +190,7 @@ class SettingsContentFactory(
                 pageRoot.addSettingsSection(context.getString(R.string.section_comment_purify)) { commentRows() }
                 pageRoot.addSettingsSection(context.getString(R.string.section_mine_customize)) { mineProfileRows() }
                 pageRoot.addSettingsSection(context.getString(R.string.section_story_purify)) { storyRows() }
+                pageRoot.addSettingsSection(context.getString(R.string.section_mbgeb)) { mbgebRows() }
                 if (hasHiddenFeatures()) {
                     indexSearchTargets = false
                     pageRoot.addSettingsSection(context.getString(R.string.about_hidden_features_title)) {
@@ -3259,6 +3260,19 @@ class SettingsContentFactory(
     )
 
     private data class MineComponentItem(val name: String)
+
+    /**
+     * MBGTEB 移植过来的功能。与主线功能分开成独立栏目，便于整体取舍，
+     * 也让上游合并时这一块是连续的、互不相交的改动。
+     */
+    private fun mbgebRows(): List<View> = listOf(
+        createSwitchRow(
+            context.getString(R.string.mbgeb_p2p_disable_title),
+            context.getString(R.string.mbgeb_p2p_disable_summary),
+            ModuleSettings.KEY_P2P_DISABLE_ENABLED,
+            false,
+        ),
+    )
 
     private companion object {
         private const val PROJECT_REPOSITORY_URL = "https://github.com/HSSkyBoy/BBZQ"

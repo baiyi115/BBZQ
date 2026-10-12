@@ -521,4 +521,9 @@
     <string name="component_pool_list_title">已发现的资源池</string>
     <string name="component_pool_unavailable_summary">暂无资源池数据。清单由哔哩哔哩按需分批下发，需正常使用一段时间后逐步收集。</string>
     <string name="component_pool_item_format">%1$s（%2$d 个模块）</string>
+
+    <!-- MBGTEB 移植（Make Bilibili Great Than Ever Before） -->
+    <string name="section_mbgeb">MBGTEB 移植</string>
+    <string name="mbgeb_p2p_disable_title">关闭 P2P / PCDN</string>
+    <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载。P2P 会占用上行带宽并额外消耗流量与电量。</string>
 </resources>
