@@ -3302,6 +3302,12 @@ class SettingsContentFactory(
             ModuleSettings.KEY_LIVE_ORIGINAL_QUALITY_ENABLED,
             false,
         ),
+        createSwitchRow(
+            context.getString(R.string.mbgeb_live_backup_url_title),
+            context.getString(R.string.mbgeb_live_backup_url_summary),
+            ModuleSettings.KEY_LIVE_BACKUP_URL_ENABLED,
+            false,
+        ),
     )
 
     private companion object {

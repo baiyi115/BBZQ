@@ -64,6 +64,7 @@ import io.github.bbzq.feats.hook.LiveRoomBlurMaskHook
 import io.github.bbzq.feats.hook.LiveRoomVerticalSwipeHook
 import io.github.bbzq.feats.hook.MediaSessionFixHook
 import io.github.bbzq.feats.hook.VideoEndRecommendHook
+import io.github.bbzq.feats.hook.mbgeb.LiveBackupUrlHook
 import io.github.bbzq.feats.hook.mbgeb.LiveQualityHook
 import io.github.bbzq.feats.hook.mbgeb.P2pDisableHook
 import io.github.bbzq.feats.hook.mbgeb.TelemetryBlockHook
@@ -238,6 +239,7 @@ object RoamingRuntime {
                 ::P2pDisableHook,
                 ::TelemetryBlockHook,
                 ::LiveQualityHook,
+                ::LiveBackupUrlHook,
             )
             ProcessScope.UNSUPPORTED -> emptyList()
         }
