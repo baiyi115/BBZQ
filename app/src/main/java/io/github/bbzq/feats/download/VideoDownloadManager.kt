@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.ModuleSettingsBridge
+import io.github.bbzq.feats.hook.CustomCdnProcessor
 import io.github.bbzq.feats.hook.NetworkTypeDetector
 import okhttp3.Call
 import okhttp3.Callback
@@ -325,6 +326,11 @@ object VideoDownloadManager {
             .apply { if (resumeFrom > 0L) header("Range", "bytes=$resumeFrom-") }
             .build()
 
+        val requestedAt = System.nanoTime()
+        var firstByteAt = 0L
+        var lastByteAt = 0L
+        var received = 0L
+
         client.newCall(request).execute().use { response ->
             // 断点恰好等于文件长度时服务端回 416：文件其实已经完整
             if (response.code == 416) {
@@ -354,6 +360,10 @@ object VideoDownloadManager {
                     while (true) {
                         val read = input.read(buffer)
                         if (read == -1) break
+                        val now = System.nanoTime()
+                        if (firstByteAt == 0L) firstByteAt = now
+                        lastByteAt = now
+                        received += read
                         file.write(buffer, 0, read)
                         written += read
                         if (total > 0L) {
@@ -366,8 +376,26 @@ object VideoDownloadManager {
                     }
                 }
             }
+            recordSpeed(url, requestedAt, firstByteAt, lastByteAt, received)
             return total
         }
+    }
+
+    /**
+     * 把这次真实下载的首字节耗时与速率记进 [CdnSpeedModel]。
+     *
+     * 零额外流量：数据本来就要下，只是顺手量一下。下次选源时会用它重排候选顺序。
+     */
+    private fun recordSpeed(url: String, requestedAt: Long, firstByteAt: Long, lastByteAt: Long, bytes: Long) {
+        if (firstByteAt == 0L || bytes <= 0L) return
+        val host = CustomCdnProcessor.hostOf(url)
+        if (host.isEmpty()) return
+        CdnSpeedModel.record(
+            host = host,
+            ttfbMs = (firstByteAt - requestedAt) / 1_000_000L,
+            bytes = bytes,
+            elapsedMs = (lastByteAt - firstByteAt) / 1_000_000L,
+        )
     }
 
     private const val TAG = "BBZQ"
