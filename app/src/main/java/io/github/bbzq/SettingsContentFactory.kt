@@ -3262,10 +3262,16 @@ class SettingsContentFactory(
     private data class MineComponentItem(val name: String)
 
     /**
-     * MBGTEB 移植过来的功能。与主线功能分开成独立栏目，便于整体取舍，
-     * 也让上游合并时这一块是连续的、互不相交的改动。
+     * 移植自 Make Bilibili Great Than Ever Before 的功能。
+     *
+     * 与主线功能分成独立栏目：进来的人能一眼看出这批开关的来处与取舍标准，
+     * 上游合并时这一块也是连续的、互不相交的改动。
      */
     private fun mbgebRows(): List<View> = listOf(
+        createInfoRow(
+            context.getString(R.string.mbgeb_about_title),
+            context.getString(R.string.mbgeb_about_summary),
+        ),
         createSwitchRow(
             context.getString(R.string.mbgeb_p2p_disable_title),
             context.getString(R.string.mbgeb_p2p_disable_summary),
