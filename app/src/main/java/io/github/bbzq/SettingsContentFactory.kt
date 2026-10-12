@@ -3284,6 +3284,12 @@ class SettingsContentFactory(
             ModuleSettings.KEY_BLOCK_TELEMETRY_ENABLED,
             false,
         ),
+        createSwitchRow(
+            context.getString(R.string.mbgeb_parallel_download_title),
+            context.getString(R.string.mbgeb_parallel_download_summary),
+            ModuleSettings.KEY_PARALLEL_DOWNLOAD_ENABLED,
+            false,
+        ),
     )
 
     private companion object {

@@ -530,4 +530,6 @@
     <string name="mbgeb_prefer_hardware_decoder_summary">按本机解码能力过滤视频流，不选只能软解的编码（多数机型上是 AV1）。软解会明显增加耗电与发热。</string>
     <string name="mbgeb_block_telemetry_title">拦掉埋点上报</string>
     <string name="mbgeb_block_telemetry_summary">丢弃 InfoEyes 埋点事件，不再上报 data.bilibili.com 的统计与日志。注意：播放行为将不再计入播放量统计。设备指纹与风控上报不在拦截范围内。</string>
+    <string name="mbgeb_parallel_download_title">多主机并行下载</string>
+    <string name="mbgeb_parallel_download_summary">把文件切成多段，分散到多台 CDN 同时下载，大文件更快。会成倍占用带宽，蜂窝网络下自动关闭。</string>
 </resources>

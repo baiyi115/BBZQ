@@ -202,6 +202,9 @@ object VideoDownloadManager {
                 val hosts = resolveCdnHosts(activity)
                 val videoSources = DownloadSourcePlan.plan(videoUrl, hosts)
                 val audioSources = DownloadSourcePlan.plan(audioUrl, hosts)
+                // 蜂窝下不并行：多主机并发会明显多吃流量与电量
+                val parallel = ModuleSettings.isParallelDownloadEnabled(ModuleSettingsBridge.instance) &&
+                    !NetworkTypeDetector.isCellular(activity)
 
                 var videoError: Throwable? = null
                 var audioError: Throwable? = null
@@ -210,7 +213,7 @@ object VideoDownloadManager {
 
                 val videoThread = Thread {
                     try {
-                        downloadWithFallback(videoSources, videoFile) { p ->
+                        downloadWithFallback(videoSources, videoFile, parallel) { p ->
                             videoPercent = p
                             postProgress(activity, onProgress, "下载中: 视频 $p% / 音频 $audioPercent%", (videoPercent + audioPercent) / 2)
                         }
@@ -222,7 +225,7 @@ object VideoDownloadManager {
                 val audioThread = Thread {
                     try {
                         if (audioUrl.isNotBlank()) {
-                            downloadWithFallback(audioSources, audioFile) { p ->
+                            downloadWithFallback(audioSources, audioFile, parallel) { p ->
                                 audioPercent = p
                                 postProgress(activity, onProgress, "下载中: 视频 $videoPercent% / 音频 $p%", (videoPercent + audioPercent) / 2)
                             }
@@ -287,13 +290,25 @@ object VideoDownloadManager {
     /**
      * 依次尝试各候选源。已经写入的字节会保留，换源时用 Range 从断点续传，
      * 不必重下已拿到的部分。
+     *
+     * [parallel] 为真时先试多主机并行，失败再退回顺序下载：并行出来的文件是若干
+     * 互不重叠的区间拼起来的，中途失败会留下空洞，必须清掉重来。
      */
     private fun downloadWithFallback(
         sources: List<DownloadSourcePlan.Source>,
         dest: File,
+        parallel: Boolean,
         progressCallback: (Int) -> Unit,
     ) {
         if (sources.isEmpty()) throw IOException("没有可用的下载源")
+
+        if (parallel && sources.size >= 2) {
+            val parallelResult = runCatching { downloadParallel(sources, dest, progressCallback) }
+            if (parallelResult.isSuccess) return
+            android.util.Log.w(TAG, "parallel download failed, falling back to sequential", parallelResult.exceptionOrNull())
+            runCatching { if (dest.exists()) dest.delete() }
+        }
+
         var lastError: Throwable? = null
         for (source in sources) {
             try {
@@ -308,6 +323,125 @@ object VideoDownloadManager {
             }
         }
         throw IOException("所有下载源均失败", lastError)
+    }
+
+    /**
+     * 多主机并行下载：把文件切成互不重叠的区间轮流分给各主机，各取各的，最后校验
+     * 总长度。
+     *
+     * 每个 worker 用自己的 [RandomAccessFile]：区间不重叠、各写各的偏移，因此不需要
+     * 任何锁。某个分片在它那台主机上失败时，就地换下一个候选源重试。
+     */
+    private fun downloadParallel(
+        sources: List<DownloadSourcePlan.Source>,
+        dest: File,
+        progressCallback: (Int) -> Unit,
+    ): Long {
+        val total = probeTotal(sources) ?: throw IOException("无法确定文件长度")
+        val pieces = PiecePlanning.plan(total, sources.size)
+            ?: throw IOException("不值得并行：长度 $total，源数 ${sources.size}")
+
+        val completed = java.util.concurrent.atomic.AtomicLong(0L)
+        val failures = java.util.Collections.synchronizedList(mutableListOf<Throwable>())
+        val buckets = PiecePlanning.assign(pieces, sources.size)
+
+        runCatching { if (dest.exists()) dest.delete() }
+
+        val workers = buckets.mapIndexed { bucketIndex, bucket ->
+            Thread {
+                try {
+                    RandomAccessFile(dest, "rw").use { file ->
+                        val buffer = ByteArray(COPY_BUFFER_SIZE)
+                        for (piece in bucket) {
+                            // 分片自己换源重试：从分配到的那个源开始，绕一圈
+                            var lastError: Throwable? = null
+                            var written = false
+                            for (offset in sources.indices) {
+                                val source = sources[(bucketIndex + offset) % sources.size]
+                                try {
+                                    fetchPiece(file, buffer, source.url, piece)
+                                    written = true
+                                    break
+                                } catch (t: Throwable) {
+                                    lastError = t
+                                }
+                            }
+                            if (!written) throw IOException("分片 ${piece.index} 全部源失败", lastError)
+                            val done = completed.addAndGet(piece.length)
+                            val percent = ((done * 100L) / total).toInt().coerceIn(0, 100)
+                            progressCallback(percent)
+                        }
+                    }
+                } catch (t: Throwable) {
+                    failures += t
+                }
+            }
+        }
+
+        workers.forEach { it.start() }
+        workers.forEach { it.join() }
+
+        failures.firstOrNull()?.let { throw IOException("并行下载失败", it) }
+        if (dest.length() != total) {
+            throw IOException("并行下载长度不符：${dest.length()} / $total")
+        }
+        return total
+    }
+
+    /** 取一个分片写进文件。要求服务端返回 206 —— 回了 200 说明 Range 被忽略，无法定位。 */
+    private fun fetchPiece(
+        file: RandomAccessFile,
+        buffer: ByteArray,
+        url: String,
+        piece: PiecePlanning.Piece,
+    ) {
+        val request = Request.Builder()
+            .url(url)
+            .header("Accept-Encoding", "identity")
+            .header("Referer", "https://www.bilibili.com")
+            .header("User-Agent", USER_AGENT)
+            .header("Range", "bytes=${piece.start}-${piece.end}")
+            .build()
+
+        client.newCall(request).execute().use { response ->
+            if (response.code != 206) throw IOException("HTTP ${response.code} for piece ${piece.index}")
+            val body = response.body ?: throw IOException("Empty response body")
+            body.byteStream().buffered(COPY_BUFFER_SIZE).use { input ->
+                file.seek(piece.start)
+                var filled = 0L
+                while (filled < piece.length) {
+                    val want = minOf(buffer.size.toLong(), piece.length - filled).toInt()
+                    val read = input.read(buffer, 0, want)
+                    if (read == -1) break
+                    file.write(buffer, 0, read)
+                    filled += read
+                }
+                if (filled != piece.length) {
+                    throw IOException("分片 ${piece.index} 不完整：$filled / ${piece.length}")
+                }
+            }
+        }
+    }
+
+    /** 用 `Range: bytes=0-0` 探一次总长度；拿不到时返回 null。 */
+    private fun probeTotal(sources: List<DownloadSourcePlan.Source>): Long? {
+        for (source in sources) {
+            val request = Request.Builder()
+                .url(source.url)
+                .header("Accept-Encoding", "identity")
+                .header("Referer", "https://www.bilibili.com")
+                .header("User-Agent", USER_AGENT)
+                .header("Range", "bytes=0-0")
+                .build()
+            val total = runCatching {
+                client.newCall(request).execute().use { response ->
+                    if (response.code != 206) return@use null
+                    DownloadSourcePlan.contentRangeTotal(response.header("Content-Range"))
+                }
+            }.getOrNull()
+            if (total != null && total > 0L) return total
+        }
+        return null
     }
 
     /**
