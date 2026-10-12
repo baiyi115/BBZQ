@@ -109,11 +109,19 @@ object CustomCdnProcessor {
             ?: findUrlListFieldValue(item)
         val backups = (rawBackups as? Iterable<*>)
             ?.filterIsInstance<String>().orEmpty()
-        val source = listOf(base).plus(backups).firstOrNull { !isPCdn(it) } ?: return
+        val candidates = listOf(base).plus(backups).filter { !isPCdn(it) }
+        // 优先用签名还有余量的地址：快过期的那个换到哪台主机都一样会 403
+        val source = candidates.firstOrNull { CdnAddressPolicy.isUsable(it) }
+            ?: candidates.firstOrNull()
+            ?: return
 
-        val rewrittenBase = replaceHost(source, hosts[0])
+        // Akamai 只认自己的 hdnts 令牌，承载不了 upos 签名的地址
+        val usableHosts = CdnAddressPolicy.usableHosts(hosts, source)
+        if (usableHosts.isEmpty()) return
+
+        val rewrittenBase = replaceHost(source, usableHosts[0])
         val rewrittenBackups = buildList {
-            hosts.drop(1).take(4).forEach { h -> add(replaceHost(source, h)) }
+            usableHosts.drop(1).take(4).forEach { h -> add(replaceHost(source, h)) }
             add(source)
         }.filter { it != rewrittenBase }.distinct()
 
