@@ -526,4 +526,6 @@
     <string name="section_mbgeb">MBGTEB 移植</string>
     <string name="mbgeb_p2p_disable_title">关闭 P2P / PCDN</string>
     <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载。P2P 会占用上行带宽并额外消耗流量与电量。</string>
+    <string name="mbgeb_prefer_hardware_decoder_title">只用硬件解码的编码</string>
+    <string name="mbgeb_prefer_hardware_decoder_summary">按本机解码能力过滤视频流，不选只能软解的编码（多数机型上是 AV1）。软解会明显增加耗电与发热。</string>
 </resources>

@@ -9,6 +9,8 @@ import io.github.bbzq.feats.allMethods
 import io.github.bbzq.feats.getObjectField
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
+import io.github.bbzq.feats.hook.mbgeb.CodecCapability
+import io.github.bbzq.feats.hook.mbgeb.CodecSelection
 import java.lang.reflect.Method
 
 class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook(env) {
@@ -27,12 +29,19 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         trialQualityEnabled = isTrialEnabled()
         highestBitrateEnabled = isHighestBitrateEnabled()
         val videoDownloadEnabled = ModuleSettings.isVideoDownloadEnabled(prefs)
+        val preferHardwareDecoder = ModuleSettings.isPreferHardwareDecoderEnabled(prefs)
 
-        if (!trialQualityEnabled && !highestBitrateEnabled && !videoDownloadEnabled) {
+        if (!trialQualityEnabled && !highestBitrateEnabled && !videoDownloadEnabled && !preferHardwareDecoder) {
             log("startHook: PlayView quality pipeline and video download disabled")
             return
         }
-        
+
+        if (preferHardwareDecoder) {
+            // 按本机硬解能力筛掉只能软解的编码（多数机型上是 AV1）
+            val allowed = CodecCapability.usableCodecIds(CodecSelection.VIDEO_CODEC_IDS)
+            highestBitrate.allowedCodecIds = allowed
+            log("startHook: hardware-decodable codecs=$allowed")
+        }
         if (highestBitrateEnabled) {
             highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
         }
@@ -237,7 +246,8 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         if (target == null) return
         val trial = isTrialEnabled()
         val highest = isHighestBitrateEnabled()
-        if (!trial && !highest) return
+        val preferHardware = ModuleSettings.isPreferHardwareDecoderEnabled(prefs)
+        if (!trial && !highest && !preferHardware) return
 
         runCatching {
             val videoInfo = target.callMethod("getVideoInfo") ?: target.callMethod("getVodInfo")
@@ -255,6 +265,10 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             }
             if (highest) {
                 highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
+            }
+            // 只开硬件解码筛选时不走画质提升，免得带出用户没开的画质变化
+            if (preferHardware && !highest) {
+                highestBitrate.applyCodecFilterOnly(target)
             }
             val stats = if (highest) {
                 highestBitrate.preferHighestBitrate(target)

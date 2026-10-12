@@ -11,6 +11,14 @@ internal class HighestBitrateProcessor(
     /** When true, skip HDR (125) and Dolby Vision (126) tiers when picking the target quality. */
     var avoidHdrDolby: Boolean = false
 
+    /**
+     * 只保留这些 codecid 的流；`null` 表示不筛选。
+     *
+     * 由 [io.github.bbzq.feats.hook.mbgeb.CodecCapability] 按本机硬解能力算出，
+     * 目的是让播放器不去选只能软解的编码。
+     */
+    var allowedCodecIds: Set<Long>? = null
+
     fun prepareRequest(request: Any?) {
         if (request == null) return
         runCatching {
@@ -58,9 +66,8 @@ internal class HighestBitrateProcessor(
 
     private fun reorderStreams(container: Any?) {
         if (container == null) return
-        val original = (container.callMethod("getStreamListList") as? Iterable<*>)
-            ?.filterNotNull()
-            .orEmpty()
+        filterCodecStreams(container)
+        val original = streamsOf(container)
         if (original.size < 2) return
 
         // Promote the most-preferred available tier as the selected quality. The order mirrors
@@ -184,6 +191,49 @@ internal class HighestBitrateProcessor(
     private fun bandwidth(stream: Any): Long {
         val video = stream.callMethod("getDashVideo") ?: return Long.MIN_VALUE
         return number(video, "getBandwidth") ?: Long.MIN_VALUE
+    }
+
+    /** 去掉本机没有硬件解码器的编码。读不到 codecid 的流保留，筛光时也保持原样。 */
+    private fun filterByCodec(streams: List<Any>): List<Any> {
+        val allowed = allowedCodecIds ?: return streams
+        val kept = streams.filter { stream ->
+            val video = stream.callMethod("getDashVideo") ?: return@filter true
+            val codec = number(video, "getCodecid") ?: number(video, "getCodeId") ?: return@filter true
+            codec in allowed
+        }
+        return kept.ifEmpty { streams }
+    }
+
+    private fun streamsOf(container: Any): List<Any> =
+        (container.callMethod("getStreamListList") as? Iterable<*>)
+            ?.filterNotNull()
+            .orEmpty()
+
+    /** 按本机硬解能力筛掉编码。即便只剩一条流也要替换，否则播放器仍可能选中它。 */
+    private fun filterCodecStreams(container: Any?) {
+        if (container == null) return
+        val all = streamsOf(container)
+        if (all.isEmpty()) return
+        val kept = filterByCodec(all)
+        if (kept.size != all.size) replaceStreamList(container, all, kept)
+    }
+
+    /**
+     * 只做编码筛选，不动画质与带宽排序。
+     *
+     * 单独开出来是因为"只用硬件解码的编码"应当独立于"解锁最高码率"生效 ——
+     * 后者会顺带提升画质，不该被这个开关带出来。
+     */
+    fun applyCodecFilterOnly(response: Any?) {
+        if (response == null || allowedCodecIds == null) return
+        runCatching {
+            filterCodecStreams(response.callMethod("getVideoInfo"))
+            filterCodecStreams(response.callMethod("getVodInfo"))
+            filterCodecStreams(response.callMethod("getViewInfo"))
+            filterCodecStreams(response.callMethod("getViewInfo")?.callMethod("getVideoInfo"))
+        }.onFailure {
+            reportFailure("codec filtering failed at ${response.javaClass.name}", it)
+        }
     }
 
     private fun replaceStreamList(container: Any, original: List<Any>, reordered: List<Any>) {

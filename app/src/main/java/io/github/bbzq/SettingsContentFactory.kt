@@ -3272,6 +3272,12 @@ class SettingsContentFactory(
             ModuleSettings.KEY_P2P_DISABLE_ENABLED,
             false,
         ),
+        createSwitchRow(
+            context.getString(R.string.mbgeb_prefer_hardware_decoder_title),
+            context.getString(R.string.mbgeb_prefer_hardware_decoder_summary),
+            ModuleSettings.KEY_PREFER_HARDWARE_DECODER_ENABLED,
+            false,
+        ),
     )
 
     private companion object {
