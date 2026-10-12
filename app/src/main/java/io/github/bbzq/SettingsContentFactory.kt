@@ -3290,6 +3290,12 @@ class SettingsContentFactory(
             ModuleSettings.KEY_PARALLEL_DOWNLOAD_ENABLED,
             false,
         ),
+        createSwitchRow(
+            context.getString(R.string.mbgeb_live_original_quality_title),
+            context.getString(R.string.mbgeb_live_original_quality_summary),
+            ModuleSettings.KEY_LIVE_ORIGINAL_QUALITY_ENABLED,
+            false,
+        ),
     )
 
     private companion object {

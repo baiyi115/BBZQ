@@ -68,6 +68,9 @@ object ModuleSettings {
 
     /** MBGTEB 移植：多主机并行下载。 */
     const val KEY_PARALLEL_DOWNLOAD_ENABLED = "parallel_download_enabled"
+
+    /** MBGTEB 移植：直播强制原画。 */
+    const val KEY_LIVE_ORIGINAL_QUALITY_ENABLED = "live_original_quality_enabled"
     const val MAX_CDN_PRIORITY_NODES = 5
     const val KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED = "purify_home_recommend_ad_enabled"
     const val KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED = "purify_home_recommend_picture_enabled"
@@ -325,6 +328,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_PREFER_HARDWARE_DECODER_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PREFER_HARDWARE_DECODER_ENABLED, false) },
         ExportableConfigSpec(KEY_BLOCK_TELEMETRY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_TELEMETRY_ENABLED, false) },
         ExportableConfigSpec(KEY_PARALLEL_DOWNLOAD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PARALLEL_DOWNLOAD_ENABLED, false) },
+        ExportableConfigSpec(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, false) },
@@ -743,6 +747,9 @@ object ModuleSettings {
 
     fun isParallelDownloadEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_PARALLEL_DOWNLOAD_ENABLED, false)
+
+    fun isLiveOriginalQualityEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, false)
 
     fun getHomeRecommendTitleKeywordsText(prefs: SharedPreferences): String =
         prefs.getString(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, "").orEmpty()
