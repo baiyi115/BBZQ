@@ -302,10 +302,15 @@ object VideoDownloadManager {
     ) {
         if (sources.isEmpty()) throw IOException("没有可用的下载源")
 
-        if (parallel && sources.size >= 2) {
+        if (parallel && sources.size >= 2 && !DownloadHealth.shouldSkipParallel()) {
             val parallelResult = runCatching { downloadParallel(sources, dest, progressCallback) }
             if (parallelResult.isSuccess) return
-            android.util.Log.w(TAG, "parallel download failed, falling back to sequential", parallelResult.exceptionOrNull())
+            DownloadHealth.recordParallelFailure()
+            android.util.Log.w(
+                TAG,
+                "parallel download failed, sequential next (parallel off for ${DownloadHealth.parallelOffRemainingMs()}ms)",
+                parallelResult.exceptionOrNull(),
+            )
             runCatching { if (dest.exists()) dest.delete() }
         }
 
@@ -316,14 +321,19 @@ object VideoDownloadManager {
                 if (total > 0L && dest.length() != total) {
                     throw IOException("下载字节数不符：${dest.length()} / $total")
                 }
+                DownloadHealth.recordHostSuccess(hostOf(source))
                 return
             } catch (t: Throwable) {
                 lastError = t
+                DownloadHealth.recordHostFailure(hostOf(source))
                 android.util.Log.w(TAG, "download from ${source.label} failed, trying next", t)
             }
         }
         throw IOException("所有下载源均失败", lastError)
     }
+
+    private fun hostOf(source: DownloadSourcePlan.Source): String =
+        CustomCdnProcessor.hostOf(source.url)
 
     /**
      * 多主机并行下载：把文件切成互不重叠的区间轮流分给各主机，各取各的，最后校验
@@ -360,9 +370,11 @@ object VideoDownloadManager {
                                 val source = sources[(bucketIndex + offset) % sources.size]
                                 try {
                                     fetchPiece(file, buffer, source.url, piece)
+                                    DownloadHealth.recordHostSuccess(hostOf(source))
                                     written = true
                                     break
                                 } catch (t: Throwable) {
+                                    DownloadHealth.recordHostFailure(hostOf(source))
                                     lastError = t
                                 }
                             }

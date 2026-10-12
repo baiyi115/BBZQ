@@ -17,7 +17,8 @@ object DownloadSourcePlan {
      * 候选顺序：用户配置的 CDN 依次在前，playurl 原始地址兜底。
      *
      * 配置的主机会先按 [CdnSpeedModel] 的实测速率重排 —— 那是真实下载顺手量出来的，
-     * 零额外流量。都没测量过时保持用户配置的顺序。
+     * 零额外流量。都没测量过时保持用户配置的顺序。近期反复失败的主机由
+     * [DownloadHealth] 排到最后。
      *
      * 只有 upgcxcode 地址才换主机 —— 签名带在路径与 query 里，换主机后依然有效，
      * 这正是播放页换 CDN 的做法。非 upgcxcode 的地址换主机没有意义。PCDN 地址也
@@ -31,7 +32,9 @@ object DownloadSourcePlan {
         if (!originalUrl.contains(UPGCXCODE_PATH)) return listOf(original)
         if (CustomCdnProcessor.isPCdn(originalUrl)) return listOf(original)
 
-        val usable = CdnSpeedModel.rank(CdnAddressPolicy.usableHosts(hosts, originalUrl))
+        val usable = DownloadHealth.rankLastCooling(
+            CdnSpeedModel.rank(CdnAddressPolicy.usableHosts(hosts, originalUrl)),
+        )
         val configured = usable.mapNotNull { host ->
             val swapped = CustomCdnProcessor.replaceHost(originalUrl, host)
             if (swapped == originalUrl) null else Source(swapped, host)
