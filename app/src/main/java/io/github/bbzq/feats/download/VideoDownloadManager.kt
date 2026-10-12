@@ -3,6 +3,9 @@ package io.github.bbzq.feats.download
 import android.app.Activity
 import android.os.Handler
 import android.os.Looper
+import io.github.bbzq.ModuleSettings
+import io.github.bbzq.ModuleSettingsBridge
+import io.github.bbzq.feats.hook.NetworkTypeDetector
 import okhttp3.Call
 import okhttp3.Callback
 import okhttp3.OkHttpClient
@@ -10,8 +13,8 @@ import okhttp3.Request
 import okhttp3.Response
 import org.json.JSONObject
 import java.io.File
-import java.io.FileOutputStream
 import java.io.IOException
+import java.io.RandomAccessFile
 
 object VideoDownloadManager {
     private val client = OkHttpClient()
@@ -195,6 +198,10 @@ object VideoDownloadManager {
             try {
                 postProgress(activity, onProgress, "正在并行下载视频与音频...", 0)
 
+                val hosts = resolveCdnHosts(activity)
+                val videoSources = DownloadSourcePlan.plan(videoUrl, hosts)
+                val audioSources = DownloadSourcePlan.plan(audioUrl, hosts)
+
                 var videoError: Throwable? = null
                 var audioError: Throwable? = null
                 var videoPercent = 0
@@ -202,7 +209,7 @@ object VideoDownloadManager {
 
                 val videoThread = Thread {
                     try {
-                        downloadFile(videoUrl, videoFile) { p ->
+                        downloadWithFallback(videoSources, videoFile) { p ->
                             videoPercent = p
                             postProgress(activity, onProgress, "下载中: 视频 $p% / 音频 $audioPercent%", (videoPercent + audioPercent) / 2)
                         }
@@ -214,7 +221,7 @@ object VideoDownloadManager {
                 val audioThread = Thread {
                     try {
                         if (audioUrl.isNotBlank()) {
-                            downloadFile(audioUrl, audioFile) { p ->
+                            downloadWithFallback(audioSources, audioFile) { p ->
                                 audioPercent = p
                                 postProgress(activity, onProgress, "下载中: 视频 $videoPercent% / 音频 $p%", (videoPercent + audioPercent) / 2)
                             }
@@ -267,43 +274,104 @@ object VideoDownloadManager {
         }
     }
 
-    private fun downloadFile(urlStr: String, dest: File, progressCallback: (Int) -> Unit) {
+    /** 用户为下载配置的 CDN 主机。蜂窝与 WiFi 可以是两份不同的列表。 */
+    private fun resolveCdnHosts(activity: Activity): List<String> = runCatching {
+        val isCellular = NetworkTypeDetector.isCellular(activity)
+        ModuleSettings.getActiveCdnHosts(ModuleSettingsBridge.instance, isCellular)
+    }.getOrElse {
+        android.util.Log.w(TAG, "resolveCdnHosts failed, using the playurl host", it)
+        emptyList()
+    }
+
+    /**
+     * 依次尝试各候选源。已经写入的字节会保留，换源时用 Range 从断点续传，
+     * 不必重下已拿到的部分。
+     */
+    private fun downloadWithFallback(
+        sources: List<DownloadSourcePlan.Source>,
+        dest: File,
+        progressCallback: (Int) -> Unit,
+    ) {
+        if (sources.isEmpty()) throw IOException("没有可用的下载源")
+        var lastError: Throwable? = null
+        for (source in sources) {
+            try {
+                val total = downloadFrom(source.url, dest, progressCallback)
+                if (total > 0L && dest.length() != total) {
+                    throw IOException("下载字节数不符：${dest.length()} / $total")
+                }
+                return
+            } catch (t: Throwable) {
+                lastError = t
+                android.util.Log.w(TAG, "download from ${source.label} failed, trying next", t)
+            }
+        }
+        throw IOException("所有下载源均失败", lastError)
+    }
+
+    /**
+     * 从单个源下载，返回服务端给出的总字节数（未知时为 `0`）。
+     *
+     * `dest` 里已有的字节会被保留：带 `Range` 从断点续传。服务端忽略 `Range`
+     * 而回了 200 时把文件截断重写，否则整段会被接在断点后面。
+     */
+    private fun downloadFrom(url: String, dest: File, progressCallback: (Int) -> Unit): Long {
+        val resumeFrom = if (dest.exists()) dest.length() else 0L
         val request = Request.Builder()
-            .url(urlStr)
+            .url(url)
             .header("Accept-Encoding", "identity")
             .header("Referer", "https://www.bilibili.com")
-            .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36")
+            .header("User-Agent", USER_AGENT)
+            .apply { if (resumeFrom > 0L) header("Range", "bytes=$resumeFrom-") }
             .build()
 
         client.newCall(request).execute().use { response ->
+            // 断点恰好等于文件长度时服务端回 416：文件其实已经完整
+            if (response.code == 416) {
+                val total = DownloadSourcePlan.contentRangeTotal(response.header("Content-Range")) ?: 0L
+                if (total > 0L && resumeFrom == total) return total
+                throw IOException("HTTP 416 during download")
+            }
             if (!response.isSuccessful) throw IOException("HTTP ${response.code} during download")
-            
+
             val body = response.body ?: throw IOException("Empty response body")
-            val contentLength = body.contentLength()
-            
-            body.byteStream().buffered(128 * 1024).use { input ->
-                FileOutputStream(dest).buffered(128 * 1024).use { output ->
-                    val buffer = ByteArray(128 * 1024)
-                    var totalBytesRead = 0L
-                    var lastPercent = 0
-                    
+            val resuming = resumeFrom > 0L && response.code == 206
+            val offset = if (resuming) resumeFrom else 0L
+            val total = if (resuming) {
+                DownloadSourcePlan.contentRangeTotal(response.header("Content-Range")) ?: 0L
+            } else {
+                body.contentLength().takeIf { it > 0L } ?: 0L
+            }
+
+            RandomAccessFile(dest, "rw").use { file ->
+                if (offset == 0L) file.setLength(0L)
+                file.seek(offset)
+                var written = offset
+
+                body.byteStream().buffered(COPY_BUFFER_SIZE).use { input ->
+                    val buffer = ByteArray(COPY_BUFFER_SIZE)
+                    var lastPercent = -1
                     while (true) {
-                        val bytesRead = input.read(buffer)
-                        if (bytesRead == -1) break
-                        output.write(buffer, 0, bytesRead)
-                        totalBytesRead += bytesRead
-                        
-                        if (contentLength > 0) {
-                            val percent = ((totalBytesRead * 100) / contentLength).toInt()
+                        val read = input.read(buffer)
+                        if (read == -1) break
+                        file.write(buffer, 0, read)
+                        written += read
+                        if (total > 0L) {
+                            val percent = ((written * 100L) / total).toInt().coerceIn(0, 100)
                             if (percent != lastPercent) {
                                 lastPercent = percent
                                 progressCallback(percent)
                             }
                         }
                     }
-                    output.flush()
                 }
             }
+            return total
         }
     }
+
+    private const val TAG = "BBZQ"
+    private const val COPY_BUFFER_SIZE = 128 * 1024
+    private const val USER_AGENT =
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
 }
