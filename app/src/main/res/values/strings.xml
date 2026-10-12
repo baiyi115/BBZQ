@@ -530,8 +530,6 @@
     <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载，减少上行带宽占用、流量与耗电。</string>
     <string name="mbgeb_prefer_hardware_decoder_title">只用硬件解码的编码</string>
     <string name="mbgeb_prefer_hardware_decoder_summary">过滤掉本机只能软解的视频编码（多数机型上是 AV1），降低播放时的耗电与发热。</string>
-    <string name="mbgeb_block_telemetry_title">拦掉埋点上报</string>
-    <string name="mbgeb_block_telemetry_summary">拦截 App 的埋点上报，减少后台流量与耗电。注意：播放行为将不再计入播放量统计。</string>
     <string name="mbgeb_parallel_download_title">多主机并行下载</string>
     <string name="mbgeb_parallel_download_summary">把文件切成多段，从多台 CDN 同时下载大文件。会成倍占用带宽，蜂窝网络下自动关闭。</string>
     <string name="mbgeb_live_original_quality_title">直播强制原画</string>
