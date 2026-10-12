@@ -65,6 +65,7 @@ import io.github.bbzq.feats.hook.LiveRoomVerticalSwipeHook
 import io.github.bbzq.feats.hook.MediaSessionFixHook
 import io.github.bbzq.feats.hook.VideoEndRecommendHook
 import io.github.bbzq.feats.hook.mbgeb.P2pDisableHook
+import io.github.bbzq.feats.hook.mbgeb.TelemetryBlockHook
 import io.github.bbzq.feats.symbol.BiliHookSymbols
 import io.github.bbzq.feats.symbol.BiliSymbolResolver
 import io.github.libxposed.api.XposedInterface
@@ -170,6 +171,7 @@ object RoamingRuntime {
             ProcessScope.WEB -> listOf(
                 ::ShareHook,
                 ::RewardAdHook,
+                ::TelemetryBlockHook,
             )
 
             ProcessScope.DOWNLOAD -> listOf(
@@ -233,6 +235,7 @@ object RoamingRuntime {
                 ::MediaSessionFixHook,
                 ::VideoEndRecommendHook,
                 ::P2pDisableHook,
+                ::TelemetryBlockHook,
             )
             ProcessScope.UNSUPPORTED -> emptyList()
         }

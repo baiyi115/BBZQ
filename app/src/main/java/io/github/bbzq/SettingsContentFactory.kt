@@ -3278,6 +3278,12 @@ class SettingsContentFactory(
             ModuleSettings.KEY_PREFER_HARDWARE_DECODER_ENABLED,
             false,
         ),
+        createSwitchRow(
+            context.getString(R.string.mbgeb_block_telemetry_title),
+            context.getString(R.string.mbgeb_block_telemetry_summary),
+            ModuleSettings.KEY_BLOCK_TELEMETRY_ENABLED,
+            false,
+        ),
     )
 
     private companion object {

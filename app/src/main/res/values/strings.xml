@@ -528,4 +528,6 @@
     <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载。P2P 会占用上行带宽并额外消耗流量与电量。</string>
     <string name="mbgeb_prefer_hardware_decoder_title">只用硬件解码的编码</string>
     <string name="mbgeb_prefer_hardware_decoder_summary">按本机解码能力过滤视频流，不选只能软解的编码（多数机型上是 AV1）。软解会明显增加耗电与发热。</string>
+    <string name="mbgeb_block_telemetry_title">拦掉埋点上报</string>
+    <string name="mbgeb_block_telemetry_summary">丢弃 InfoEyes 埋点事件，不再上报 data.bilibili.com 的统计与日志。注意：播放行为将不再计入播放量统计。设备指纹与风控上报不在拦截范围内。</string>
 </resources>
