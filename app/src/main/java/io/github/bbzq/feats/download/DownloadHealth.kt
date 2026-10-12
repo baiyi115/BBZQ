@@ -28,7 +28,7 @@ object DownloadHealth {
     /** 窗口内并行失败到这个次数就暂时关掉并行。 */
     private const val PARALLEL_FAILURES_TO_DISABLE = 2
 
-    /** 并行关闭时长 —— 与上游一致取 30 秒。 */
+    /** 并行关闭时长，与上游一致取 30 秒。 */
     private const val PARALLEL_OFF_MS = 30L * 1000L
 
     /** 计数的滑动窗口。 */

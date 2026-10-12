@@ -4,7 +4,7 @@ package io.github.bbzq.feats.download
  * 多主机并行下载的分片规划。
  *
  * 来自 Make Bilibili Great Than Ever Before 的 thread-ripper：那里是接管播放器的
- * DASH 分片请求做竞速，这里只取它对**下载**有意义的部分 —— 把文件切成互不重叠的
+ * DASH 分片请求做竞速，这里只取它对**下载**有意义的部分：把文件切成互不重叠的
  * 区间、分散到多台 CDN 上并行取。
  *
  * 与流式播放不同，下载没有实时期限，所以不需要它那套 deadline / 紧迫度 / 竞速
@@ -30,7 +30,7 @@ object PiecePlanning {
     /**
      * 规划分片。返回 `null` 表示不值得并行，调用方应走单连接的顺序下载。
      *
-     * 分片数不会超过主机数的两倍 —— 再多也只是让每台主机多排几个区间，对总耗时
+     * 分片数不会超过主机数的两倍。再多也只是让每台主机多排几个区间，对总耗时
      * 没有帮助，反而增加失败面。
      */
     fun plan(totalBytes: Long, hostCount: Int): List<Piece>? {

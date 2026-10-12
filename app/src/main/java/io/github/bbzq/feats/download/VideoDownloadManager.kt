@@ -400,7 +400,7 @@ object VideoDownloadManager {
         return total
     }
 
-    /** 取一个分片写进文件。要求服务端返回 206 —— 回了 200 说明 Range 被忽略，无法定位。 */
+    /** 取一个分片写进文件。要求服务端返回 206；回了 200 说明 Range 被忽略，无法定位。 */
     private fun fetchPiece(
         file: RandomAccessFile,
         buffer: ByteArray,

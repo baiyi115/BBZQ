@@ -525,17 +525,17 @@
     <!-- MBGTEB 移植（Make Bilibili Great Than Ever Before） -->
     <string name="section_mbgeb">Make Bilibili Great Than Ever Before</string>
     <string name="mbgeb_about_title">关于本栏目</string>
-    <string name="mbgeb_about_summary">以下开关移植自浏览器用户脚本 Make Bilibili Great Than Ever Before。移动端优先改请求参数或使用 App 自带开关，而不是像网页端那样改写 URL —— 后者依赖 URL 格式，客户端改版即失效。全部默认关闭。</string>
+    <string name="mbgeb_about_summary">以下功能由同名浏览器脚本移植而来，均为实验性改动，默认关闭。</string>
     <string name="mbgeb_p2p_disable_title">关闭 P2P / PCDN</string>
-    <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载。P2P 会占用上行带宽并额外消耗流量与电量。</string>
+    <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载，减少上行带宽占用、流量与耗电。</string>
     <string name="mbgeb_prefer_hardware_decoder_title">只用硬件解码的编码</string>
-    <string name="mbgeb_prefer_hardware_decoder_summary">按本机解码能力过滤视频流，不选只能软解的编码（多数机型上是 AV1）。软解会明显增加耗电与发热。</string>
+    <string name="mbgeb_prefer_hardware_decoder_summary">过滤掉本机只能软解的视频编码（多数机型上是 AV1），降低播放时的耗电与发热。</string>
     <string name="mbgeb_block_telemetry_title">拦掉埋点上报</string>
-    <string name="mbgeb_block_telemetry_summary">丢弃 InfoEyes 埋点事件，不再上报 data.bilibili.com 的统计与日志。注意：播放行为将不再计入播放量统计。设备指纹与风控上报不在拦截范围内。</string>
+    <string name="mbgeb_block_telemetry_summary">拦截 App 的埋点上报，减少后台流量与耗电。注意：播放行为将不再计入播放量统计。</string>
     <string name="mbgeb_parallel_download_title">多主机并行下载</string>
-    <string name="mbgeb_parallel_download_summary">把文件切成多段，分散到多台 CDN 同时下载，大文件更快。会成倍占用带宽，蜂窝网络下自动关闭。</string>
+    <string name="mbgeb_parallel_download_summary">把文件切成多段，从多台 CDN 同时下载大文件。会成倍占用带宽，蜂窝网络下自动关闭。</string>
     <string name="mbgeb_live_original_quality_title">直播强制原画</string>
-    <string name="mbgeb_live_original_quality_summary">把直播请求的画质档位抬到原画，让服务端直接返回原画流。已经在原画及以上（4K、杜比）时不改动。</string>
+    <string name="mbgeb_live_original_quality_summary">强制以原画档位请求直播流；已经是原画或更高档位时不做改动。</string>
     <string name="mbgeb_live_backup_url_title">直播多 CDN 回退</string>
-    <string name="mbgeb_live_backup_url_summary">让直播播放器使用 playurl 给的备用 CDN 地址（包含本模块按优先级改写进去的那几台），主线路慢或失败时自动切换。该机制原本由服务端按机型灰度。</string>
+    <string name="mbgeb_live_backup_url_summary">直播主线路卡顿或失败时自动切换到备用 CDN 地址。</string>
 </resources>

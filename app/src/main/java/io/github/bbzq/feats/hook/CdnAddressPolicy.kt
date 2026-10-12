@@ -8,7 +8,7 @@ package io.github.bbzq.feats.hook
  *
  * 背景：upos 与 Akamai 用的是两套签名。upos 地址带 `upsig`，Akamai 地址带 `hdnts`
  * 令牌。Akamai 只认自己的 `hdnts`，把一个 upos 签名的地址换到 `*.akamaized.net`
- * 上会被 403 —— 而 `upos-hz-mirrorakam.akamaized.net` 恰好长得像合法的 upos 镜像，
+ * 上会被 403。而 `upos-hz-mirrorakam.akamaized.net` 恰好长得像合法的 upos 镜像，
  * 所以它能被选进 CDN 列表，然后稳定地失败。
  *
  * 全部用字符串操作而非 `android.net.Uri`，以便纯 JVM 单测可直接覆盖。
@@ -44,7 +44,7 @@ object CdnAddressPolicy {
      * 地址属于哪套签名。
      *
      * 判定顺序与上游一致：显式带 `hdnts` 即为 Akamai；否则只有在 Akamai 主机上、
-     * 且没有 `upsig` 时才算 Akamai —— 因为 Akamai 主机上也可能是回源到 upos 的地址。
+     * 且没有 `upsig` 时才算 Akamai。因为 Akamai 主机上也可能是回源到 upos 的地址。
      */
     fun signatureFamilyOf(url: String): SignatureFamily {
         val hasHdntsToken = queryParam(url, "hdnts") != null
@@ -59,7 +59,7 @@ object CdnAddressPolicy {
      *
      * Akamai 只能承载 Akamai 签名的地址；其余主机放行（upos 签名搬到别的 upos 主机
      * 是 B 站 CDN 切换的常规做法）。反方向（Akamai 签名搬到 upos 主机）未经验证，
-     * 这里选择放行，因为它不影响主流程 —— 改写目标默认是 upos 主机。
+     * 这里选择放行，因为它不影响主流程（改写目标默认是 upos 主机）。
      */
     fun canHostServe(host: String, sourceUrl: String): Boolean {
         if (!isAkamaiHost(host)) return true
@@ -120,7 +120,7 @@ object CdnAddressPolicy {
         value?.toLongOrNull()?.takeIf { it > 0L } ?: 0L
 
     /**
-     * 取查询参数。与 `Uri.getQueryParameter` 不同，这里不做百分号解码 ——
+     * 取查询参数。与 `Uri.getQueryParameter` 不同，这里不做百分号解码：
      * 用到的参数（`deadline` / `upsig` / `hdnts`）都不需要，而未编码的 `hdnts`
      * 值里含有 `=` 与 `~`，解码反而会破坏它。
      */

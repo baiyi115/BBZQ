@@ -16,11 +16,11 @@ object DownloadSourcePlan {
     /**
      * 候选顺序：用户配置的 CDN 依次在前，playurl 原始地址兜底。
      *
-     * 配置的主机会先按 [CdnSpeedModel] 的实测速率重排 —— 那是真实下载顺手量出来的，
+     * 配置的主机会先按 [CdnSpeedModel] 的实测速率重排。那是真实下载顺手量出来的，
      * 零额外流量。都没测量过时保持用户配置的顺序。近期反复失败的主机由
      * [DownloadHealth] 排到最后。
      *
-     * 只有 upgcxcode 地址才换主机 —— 签名带在路径与 query 里，换主机后依然有效，
+     * 只有 upgcxcode 地址才换主机。签名带在路径与 query 里，换主机后依然有效，
      * 这正是播放页换 CDN 的做法。非 upgcxcode 的地址换主机没有意义。PCDN 地址也
      * 不参与换主机：它本来就要被丢弃。Akamai 承载不了 upos 签名，由
      * [CdnAddressPolicy.usableHosts] 过滤掉。

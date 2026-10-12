@@ -12,7 +12,7 @@ package io.github.bbzq.feats.hook.mbgeb
  * 服务端就会返回原画流。不用解析 URL，也没有后缀正则失效的风险。
  *
  * 直播档位数值即序：流畅 80 < 高清 150 < 超清 250 < 蓝光 400 < **原画 10000**
- * < 4K 20000 < 杜比 30000。因此"抬到原画"是 `max(当前, 10000)`，只升不降 ——
+ * < 4K 20000 < 杜比 30000。因此"抬到原画"是 `max(当前, 10000)`，只升不降。
  * 用户已经选了 4K / 杜比时不动它。
  */
 object LiveQualityPolicy {
@@ -28,7 +28,7 @@ object LiveQualityPolicy {
     /**
      * 应当改写成哪个档位；`null` 表示不改。
      *
-     * [currentQn] 为 `null` 表示请求里没有 `qn` 参数 —— 那正是最需要补上的情况，
+     * [currentQn] 为 `null` 表示请求里没有 `qn` 参数，那正是最需要补上的情况，
      * 返回原画档位。
      */
     fun raiseToOriginal(currentQn: Int?): Int? {

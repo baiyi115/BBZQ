@@ -18,7 +18,7 @@ import java.lang.reflect.Modifier
  * - **与底层 HTTP 栈无关。** B 站有两套 HTTP 栈：OkHttp，以及自研的 `ktor-ignet`
  *   （`com.bilibili.ktor.KtorClientKt.ktorEngineName()` 返回 `"ktor-ignet"`，
  *   即 Ktor 走的是自己的引擎而不是 OkHttp）。按 URL 在 OkHttp 层拦，会漏掉走
- *   ignet 的那一半，而且不报错 —— 只是静默无效。
+ *   ignet 的那一半，而且不报错，只是静默无效。
  * - **事件在进入队列前就被丢掉**，连落盘、压缩、重试都省了，省的不只是流量。
  *
  * 明确不碰风控：`com.bilibili.gripper.riskcontrol.*`（`ExClimbCongLing` /

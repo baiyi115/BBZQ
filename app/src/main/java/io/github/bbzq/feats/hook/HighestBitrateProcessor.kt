@@ -221,7 +221,7 @@ internal class HighestBitrateProcessor(
     /**
      * 只做编码筛选，不动画质与带宽排序。
      *
-     * 单独开出来是因为"只用硬件解码的编码"应当独立于"解锁最高码率"生效 ——
+     * 单独开出来是因为"只用硬件解码的编码"应当独立于"解锁最高码率"生效：
      * 后者会顺带提升画质，不该被这个开关带出来。
      */
     fun applyCodecFilterOnly(response: Any?) {
