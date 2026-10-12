@@ -657,6 +657,7 @@ object ModuleSettings {
         CdnEndpoint("alib（阿里）", "upos-sz-mirroralib.bilivideo.com"),
         CdnEndpoint("alio1（阿里）", "upos-sz-mirroralio1.bilivideo.com"),
         CdnEndpoint("bos（百度）", "upos-sz-mirrorbos.bilivideo.com"),
+        CdnEndpoint("bd（百度备用）", "upos-sz-mirrorbd.bilivideo.com"),
         CdnEndpoint("cos（腾讯）", "upos-sz-mirrorcos.bilivideo.com"),
         CdnEndpoint("cosb（腾讯）", "upos-sz-mirrorcosb.bilivideo.com"),
         CdnEndpoint("coso1（腾讯）", "upos-sz-mirrorcoso1.bilivideo.com"),
@@ -668,11 +669,14 @@ object ModuleSettings {
         CdnEndpoint("08ct（华为）", "upos-sz-mirror08ct.bilivideo.com"),
         CdnEndpoint("tf_hw（华为）", "upos-tf-all-hw.bilivideo.com"),
         CdnEndpoint("tf_tx（腾讯）", "upos-tf-all-tx.bilivideo.com"),
+        CdnEndpoint("estgoss（备用）", "upos-sz-estgoss.bilivideo.com"),
         CdnEndpoint("akamai（海外）", "upos-hz-mirrorakam.akamaized.net"),
         CdnEndpoint("aliov（阿里海外）", "upos-sz-mirroraliov.bilivideo.com"),
         CdnEndpoint("cosov（腾讯海外）", "upos-sz-mirrorcosov.bilivideo.com"),
         CdnEndpoint("hwov（华为海外）", "upos-sz-mirrorhwov.bilivideo.com"),
         CdnEndpoint("hk_bcache（Bilibili 海外）", "cn-hk-eq-bcache-01.bilivideo.com"),
+        CdnEndpoint("hk_eq_01_01（Bilibili 海外）", "cn-hk-eq-01-01.bilivideo.com"),
+        CdnEndpoint("hk_eq_01_03（Bilibili 海外）", "cn-hk-eq-01-03.bilivideo.com"),
     )
 
     fun isCustomCdnEnabled(prefs: SharedPreferences): Boolean =
