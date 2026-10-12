@@ -13,6 +13,25 @@ object CustomCdnProcessor {
         RegexOption.IGNORE_CASE,
     )
 
+    /**
+     * 子域里含此标记的是 HTTP 302 型 PCDN，例如 `upos-sz-302ppio.bilivideo.com`、
+     * `upos-sz-302kodo.bilivideo.com`。这类主机名符合 upos 镜像的形状，但对不上
+     * [PC_DN_REGEX]（它要求 `a-b-c` 三段），所以需要单独一条结构规则。
+     */
+    private const val PCDN_SUBDOMAIN_MARKER = "302"
+
+    /** 302 型 PCDN 的真实落点。它们不出现在 playinfo 里，只作为 302 目标出现。 */
+    private val PCDN_SINK_DOMAINS = listOf("nexusedgeio.com", "ahdohpiechei.com")
+
+    /**
+     * 伪装成 upos 镜像的 PCDN 主机：走 upgcxcode 路径，但证书签的是 `*.bilivideo.cn`，
+     * 说明实际由 PCDN 承载。
+     */
+    private const val PCDN_MIRROR_HOST_MARKER = "mirror14b"
+
+    /** 裸 IPv4 主机：PCDN 节点常以 IP 直出，例如 `1.2.3.4:8080/v1/resource`。 */
+    private val IPV4_HOST_REGEX = Regex("""^\d{1,3}(?:\.\d{1,3}){3}$""")
+
     fun rewriteResponse(
         response: Any?,
         prefs: SharedPreferences,
@@ -169,11 +188,38 @@ object CustomCdnProcessor {
             }.getOrDefault(false)
         } ?: false
 
+    /**
+     * 从 URL 里取主机名：小写、去端口、去协议。无法解析时返回空串。
+     *
+     * 只用字符串操作而非 `android.net.Uri`，这样它可以在纯 JVM 单测里直接跑。
+     */
+    fun hostOf(url: String): String {
+        val afterScheme = when {
+            url.contains("://") -> url.substringAfter("://")
+            url.startsWith("//") -> url.substring(2)
+            else -> url
+        }
+        return afterScheme
+            .substringBefore('/')
+            .substringBefore('?')
+            .substringBefore(':')
+            .lowercase()
+    }
+
+    private fun hostMatchesDomain(host: String, domain: String): Boolean =
+        host == domain || host.endsWith(".$domain")
+
     fun isPCdn(url: String): Boolean {
-        val host = url.substringAfter("://").substringBefore('/').substringBefore(':').lowercase()
+        val host = hostOf(url)
+        if (host.isEmpty()) return false
+        val label = host.substringBefore('.')
         return host.contains("mcdn") ||
             host.contains("szbdyd") ||
             host.contains("p2p") ||
+            host.contains(PCDN_MIRROR_HOST_MARKER) ||
+            label.contains(PCDN_SUBDOMAIN_MARKER) ||
+            PCDN_SINK_DOMAINS.any { hostMatchesDomain(host, it) } ||
+            IPV4_HOST_REGEX.matches(host) ||
             host.startsWith("p-") ||
             host.startsWith("m-") ||
             PC_DN_REGEX.containsMatchIn(host)
