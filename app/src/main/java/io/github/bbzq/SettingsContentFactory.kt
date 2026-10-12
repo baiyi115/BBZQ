@@ -191,6 +191,7 @@ class SettingsContentFactory(
                 pageRoot.addSettingsSection(context.getString(R.string.section_mine_customize)) { mineProfileRows() }
                 pageRoot.addSettingsSection(context.getString(R.string.section_story_purify)) { storyRows() }
                 pageRoot.addSettingsSection(context.getString(R.string.section_mbgeb)) { mbgebRows() }
+                pageRoot.addSettingsSection(context.getString(R.string.section_power)) { powerSaveRows() }
                 if (hasHiddenFeatures()) {
                     indexSearchTargets = false
                     pageRoot.addSettingsSection(context.getString(R.string.about_hidden_features_title)) {
@@ -3267,6 +3268,15 @@ class SettingsContentFactory(
      * 单独成栏目，便于整批取用与取舍；上游合并时这一块也是连续且互不相交的改动。
      * 各开关的取舍理由写在对应 hook 类的注释里，面向用户的行只说明它有什么用。
      */
+    private fun powerSaveRows(): List<View> = listOf(
+        createSwitchRow(
+            context.getString(R.string.power_save_enabled_title),
+            context.getString(R.string.power_save_enabled_summary),
+            ModuleSettings.KEY_POWER_SAVE_ENABLED,
+            false,
+        ),
+    )
+
     private fun mbgebRows(): List<View> = listOf(
         createInfoRow(
             context.getString(R.string.mbgeb_about_title),

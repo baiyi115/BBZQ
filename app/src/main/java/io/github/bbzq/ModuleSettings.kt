@@ -57,6 +57,9 @@ object ModuleSettings {
     const val KEY_CDN_SPEED_TEST_COOLDOWN_SEC = "cdn_speed_test_cooldown_sec"
     const val KEY_CDN_SPEED_TEST_PARALLEL = "cdn_speed_test_parallel"
 
+    /** 功耗治理：后台任务、预热服务与装饰动画的总开关。 */
+    const val KEY_POWER_SAVE_ENABLED = "power_save_enabled"
+
     /** MBGTEB 移植：关闭 IJK 播放器的 P2P / PCDN。 */
     const val KEY_P2P_DISABLE_ENABLED = "p2p_disable_enabled"
 
@@ -327,6 +330,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_CDN_SPEED_TEST_PARALLEL, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CDN_SPEED_TEST_PARALLEL, true) },
         ExportableConfigSpec(KEY_P2P_DISABLE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_P2P_DISABLE_ENABLED, false) },
         ExportableConfigSpec(KEY_PREFER_HARDWARE_DECODER_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PREFER_HARDWARE_DECODER_ENABLED, false) },
+        ExportableConfigSpec(KEY_POWER_SAVE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_POWER_SAVE_ENABLED, false) },
         ExportableConfigSpec(KEY_PARALLEL_DOWNLOAD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PARALLEL_DOWNLOAD_ENABLED, false) },
         ExportableConfigSpec(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, false) },
         ExportableConfigSpec(KEY_LIVE_BACKUP_URL_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_LIVE_BACKUP_URL_ENABLED, false) },
@@ -746,6 +750,9 @@ object ModuleSettings {
 
     fun isPreferHardwareDecoderEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_PREFER_HARDWARE_DECODER_ENABLED, false)
+
+    fun isPowerSaveEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_POWER_SAVE_ENABLED, false)
 
 
     fun isParallelDownloadEnabled(prefs: SharedPreferences): Boolean =

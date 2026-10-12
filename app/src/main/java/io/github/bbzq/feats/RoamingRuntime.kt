@@ -13,6 +13,7 @@ import io.github.bbzq.feats.hook.DaggerCircularDependencyFixHook
 import io.github.bbzq.feats.hook.AutoLikeHook
 import io.github.bbzq.feats.hook.AiDeclaredVideoHook
 import io.github.bbzq.feats.hook.PgcActivityPopupHook
+import io.github.bbzq.feats.hook.PowerSaveHook
 import io.github.bbzq.feats.hook.AccessKeyHook
 import io.github.bbzq.feats.hook.ChronosPromotionHook
 import io.github.bbzq.feats.hook.CustomThemeHook
@@ -189,6 +190,7 @@ object RoamingRuntime {
                 ::FreeCopyHook,
                 ::BottomBarHook,
                 ::ComponentPoolBlockHook,
+                ::PowerSaveHook,
                 ::HomeComponentHideHook,
                 ::HomeRecommendAdHook,
                 ::HomeRecommendTabHook,
