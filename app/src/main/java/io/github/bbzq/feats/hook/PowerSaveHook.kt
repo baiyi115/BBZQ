@@ -3,6 +3,7 @@ package io.github.bbzq.feats.hook
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
+import android.text.TextUtils
 import android.view.View
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
@@ -11,6 +12,7 @@ import io.github.bbzq.feats.allMethods
 import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.methodOrNull
+import java.lang.reflect.Modifier
 
 /**
  * 播放与后台的功耗治理。
@@ -33,8 +35,11 @@ import io.github.bbzq.feats.methodOrNull
  * - 内推长连接：`BbcClientManager` 启动应用内推送的 TCP 长连接，失败时会走节点轮询重试
  *   （`loop message error, try next node`），是典型的后台耗电源。锁屏通知走厂商通道，不受影响。
  * - 装饰动画：CTC 头像挂件的涟漪动画通过一个回调转发器让整棵 View 树每帧失效，暂停视频后
- *   仍在跑；列表里直播卡片上的徽章图标（布局 id `live_badge_lottie`）由 Lottie 无限播放。
- *   前者吞掉回调转发，后者按视图 id 拦下 `playAnimation`，两者都只让动画定格，图标仍在。
+ *   仍在跑；列表里的直播徽章、合集与选集行、播放列表标题这些位置还有若干无限循环的 Lottie
+ *   图标（按资源名解析 `live_badge_lottie`、`lottie_wave*`、`icon_play`）；播放器左下角的
+ *   背景音乐挂件则会下载服务端下发的 SVGA 逐帧循环播放，曲名用的还是 TextView 原生跑马灯。
+ *   这几处分别吞掉回调转发、按视图 id 拦 `playAnimation`、挡下挂件内的 `startAnimation`
+ *   与 `setSelected`，都只让动画定格，图标和文字仍在原处。
  * - 播放日志：`AbrParamsInterface.GetDdSwitch` 是所有 `ijkplayer.*` 实验开关的统一入口，
  *   其中吞吐日志在播放期间持续记录网络细节。
  *
@@ -136,7 +141,7 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return installed
     }
 
-    /** 头像挂件的失效转发与直播徽章的 Lottie 播放。 */
+    /** 头像挂件的失效转发，以及徽章、合集、播放器 BGM 这些常驻图标的无限动画。 */
     private fun installDecorationFreeze(): Int {
         var installed = 0
 
@@ -147,20 +152,97 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 installed++
             }
 
-        val badgeId = resolveLiveBadgeLottieId()
-        if (badgeId != 0) {
+        val frozenIds = resolveFrozenLottieIds()
+        if (frozenIds.isNotEmpty()) {
             val lottieDrawable = classLoader.findClassOrNull(LOTTIE_DRAWABLE)
             LOTTIE_PLAY_METHODS.forEach { name ->
                 lottieDrawable?.methodOrNull(name)?.let { method ->
                     env.hookBefore(method) { param ->
                         val view = (param.thisObject as? Drawable)?.callback as? View
-                        if (view?.id == badgeId) param.result = null
+                        if (view != null && view.id in frozenIds) param.result = null
                     }
                     installed++
                 }
             }
         }
+
+        installed += installBgmWidgetSVGAFreeze()
+        installed += installBgmWidgetMarqueeFreeze()
         return installed
+    }
+
+    /**
+     * 背景音乐名称的跑马灯。
+     *
+     * 挂件给曲名用的 TextView 配了 `setEllipsize(MARQUEE)`、`setSingleLine(true)` 与
+     * `setSelected(true)`，这是 Android 原生跑马灯的三件套：选中态会让 TextView 把整段
+     * 文字按帧平移重绘，曲名就不会停下来。这里只处理挂件内部的这个 TextView，
+     * 把选中态挡回去、省略方式改成尾部截断，曲名以省略号静态显示开头部分。
+     */
+    private fun installBgmWidgetMarqueeFreeze(): Int {
+        val bgmWidget = classLoader.findClassOrNull(BGM_WIDGET) ?: return 0
+        val textView = classLoader.findClassOrNull(TEXT_VIEW) ?: return 0
+        var installed = 0
+
+        textView.methodOrNull(SET_SELECTED, java.lang.Boolean.TYPE)?.let { method ->
+            env.hookBefore(method) { param ->
+                if (param.args.getOrNull(0) != true) return@hookBefore
+                val view = param.thisObject as? View ?: return@hookBefore
+                if (view.hasAncestorOfType(bgmWidget)) param.args[0] = false
+            }
+            installed++
+        }
+
+        classLoader.findClassOrNull(TRUNCATE_AT)
+            ?.let { textView.methodOrNull(SET_ELLIPSIZE, it) }
+            ?.let { method ->
+                env.hookBefore(method) { param ->
+                    if (param.args.getOrNull(0) == null) return@hookBefore
+                    val view = param.thisObject as? View ?: return@hookBefore
+                    if (view.hasAncestorOfType(bgmWidget)) {
+                        param.args[0] = TextUtils.TruncateAt.END
+                    }
+                }
+                installed++
+            }
+        return installed
+    }
+
+    /**
+     * 播放器左下角背景音乐挂件里的动态图标。
+     *
+     * 这个挂件的图标有两条路：服务端给了 SVGA 就下动画并循环播（`getPlayTimes()` 在动态显示
+     * 打开时返回 0，也就是无限循环），没给才退回静态图。SVGA 是矢量动画，每次循环都要逐帧
+     * 解码重绘，停掉它图标仍停在第一帧。
+     *
+     * 这里只拦挂件内部的 SVGA：以 `GeminiPlayerBgmWidget` 作为祖先类型判断，
+     * 直播间的入场特效等其他 SVGA 不受影响。
+     */
+    private fun installBgmWidgetSVGAFreeze(): Int {
+        val svgaImageView = classLoader.findClassOrNull(SVGA_IMAGE_VIEW) ?: return 0
+        val bgmWidget = classLoader.findClassOrNull(BGM_WIDGET) ?: return 0
+        return svgaImageView.declaredMethods
+            .filter { method ->
+                method.name == SVGA_START_ANIMATION &&
+                    method.returnType == Void.TYPE &&
+                    !Modifier.isStatic(method.modifiers)
+            }
+            .onEach { method ->
+                env.hookBefore(method) { param ->
+                    val view = param.thisObject as? View ?: return@hookBefore
+                    if (view.hasAncestorOfType(bgmWidget)) param.result = null
+                }
+            }
+            .size
+    }
+
+    private fun View.hasAncestorOfType(type: Class<*>): Boolean {
+        var parent = this.parent
+        while (parent is View) {
+            if (type.isInstance(parent)) return true
+            parent = parent.parent
+        }
+        return false
     }
 
     /** 播放期间的网络日志开关，见 `AbrParamsInterface.GetDdSwitch`。 */
@@ -175,10 +257,16 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return 1
     }
 
-    /** 按资源名解析徽章图标的 id，避免把某个版本的 id 写死在代码里。 */
-    private fun resolveLiveBadgeLottieId(): Int = runCatching {
-        env.hostContext.resources.getIdentifier(LIVE_BADGE_LOTTIE_ID_NAME, "id", env.packageName)
-    }.getOrDefault(0)
+    /** 按资源名解析要定格的图标 id，避免把某个版本的 id 写死在代码里。 */
+    private fun resolveFrozenLottieIds(): Set<Int> {
+        val resources = env.hostContext.resources
+        return FROZEN_LOTTIE_ID_NAMES.mapNotNull { name ->
+            val id = runCatching {
+                resources.getIdentifier(name, "id", env.packageName)
+            }.getOrDefault(0)
+            id.takeIf { it != 0 }
+        }.toSet()
+    }
 
     private companion object {
         const val APP_STATE_TRACKER = "com.bilibili.gripper.memmonitor.AppStateTracker"
@@ -192,7 +280,32 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         const val AUTO_START_ALL_TASK_ACTION =
             "tv.danmaku.bili.services.videodownload.action.AutoStartAllTaskIfNeedAction"
         const val GET_DD_SWITCH = "GetDdSwitch"
-        const val LIVE_BADGE_LOTTIE_ID_NAME = "live_badge_lottie"
+
+        /** 播放器 BGM 挂件与它的 SVGA 播放器，两者都在不在混淆范围的包里。 */
+        const val BGM_WIDGET = "com.bilibili.app.gemini.ugc.feature.GeminiPlayerBgmWidget"
+        const val SVGA_IMAGE_VIEW = "com.opensource.svgaplayer.SVGAImageView"
+        const val SVGA_START_ANIMATION = "startAnimation"
+        const val TEXT_VIEW = "android.widget.TextView"
+        const val SET_SELECTED = "setSelected"
+        const val SET_ELLIPSIZE = "setEllipsize"
+        const val TRUNCATE_AT = "android.text.TextUtils\$TruncateAt"
+
+        /**
+         * 需要定格的图标。这些 Lottie 都是无限循环播放的装饰动画，
+         * 拦掉 playAnimation 之后图标仍停在第一帧，位置和尺寸都不变。
+         *
+         * - `live_badge_lottie`：推荐流里的直播徽章
+         * - `lottie_wave` 系列：合集与选集行的波形，见 theseus_module_ugc_season_simple_layout
+         * - `icon_play`：播放列表与课程浮动标题的播放指示
+         */
+        val FROZEN_LOTTIE_ID_NAMES = listOf(
+            "live_badge_lottie",
+            "lottie_wave",
+            "lottie_wave1",
+            "lottie_wave2",
+            "lottie_wave3",
+            "icon_play",
+        )
 
         val STARTUP_TASK_METHODS = listOf("a", "b")
         val LOTTIE_PLAY_METHODS = listOf("playAnimation", "resumeAnimation")
