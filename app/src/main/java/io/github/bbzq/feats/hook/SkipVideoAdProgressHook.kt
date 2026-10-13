@@ -646,11 +646,13 @@ class SkipVideoAdProgressHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private fun isSupportedProgressView(view: ProgressBar): Boolean =
         isPlayerSeekView(view) || isStorySeekBar(view) || isInlineProgressView(view)
 
+    // draw 时每个分段都要查一次颜色；categories 是固定列表，预先建 map 避免逐帧线性扫描
+    private val categoryColors by lazy {
+        ModuleSettings.skipVideoAdCategories.associate { it.key to it.color }
+    }
+
     private fun colorFor(category: String): Int =
-        ModuleSettings.skipVideoAdCategories
-            .firstOrNull { it.key == category }
-            ?.color
-            ?: 0xFFFB7299.toInt()
+        categoryColors[category] ?: 0xFFFB7299.toInt()
 
     private fun Class<*>.isNumericType(): Boolean =
         this == Int::class.javaPrimitiveType ||

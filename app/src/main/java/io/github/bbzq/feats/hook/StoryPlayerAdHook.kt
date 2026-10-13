@@ -13,9 +13,11 @@ import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.replace
 import java.lang.reflect.Method
 import java.util.LinkedHashMap
+import java.util.concurrent.ConcurrentHashMap
 
 class StoryPlayerAdHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private var itemDebugFailedLogged = false
+    private val methodCache = ConcurrentHashMap<Class<*>, ConcurrentHashMap<String, Method?>>()
     private val recentStoryFeedDebugLogs =
         object : LinkedHashMap<String, Long>(DEBUG_FEED_LOG_CACHE_SIZE, 0.75f, true) {
             override fun removeEldestEntry(eldest: MutableMap.MutableEntry<String, Long>?): Boolean =
@@ -430,13 +432,24 @@ class StoryPlayerAdHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun callNoArg(target: Any?, name: String): Any? {
         if (target == null) return null
-        return runCatching {
-            target.javaClass.getMethod(name).invoke(target)
-        }.getOrNull()
-            ?: runCatching {
-                target.javaClass.getDeclaredMethod(name).apply { isAccessible = true }.invoke(target)
-            }.getOrNull()
+        val method = debugNoArgMethod(target.javaClass, name) ?: return null
+        return runCatching { method.invoke(target) }.getOrNull()
     }
+
+    /**
+     * 每个条目要回调 6-10 个属性 getter，方法查找必须缓存；
+     * 找不到的结果也记入缓存，避免同类型反复全量扫描。
+     */
+    private fun debugNoArgMethod(type: Class<*>, name: String): Method? =
+        methodCache.computeIfAbsent(type) { ConcurrentHashMap() }
+            .computeIfAbsent(name) { methodName ->
+                runCatching { type.getMethod(methodName) }.getOrNull()
+                    ?.takeIf { !java.lang.reflect.Modifier.isStatic(it.modifiers) }
+                    ?.apply { isAccessible = true }
+                    ?: type.declaredMethods.firstOrNull {
+                        it.name == methodName && it.parameterCount == 0
+                    }?.apply { isAccessible = true }
+            }
 
     private fun Any?.asLongOrNull(): Long? =
         when (this) {
