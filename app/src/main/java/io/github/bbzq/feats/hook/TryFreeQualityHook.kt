@@ -54,8 +54,17 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             runCatching {
                 val setTextMethod = android.widget.TextView::class.java.getMethod("setText", CharSequence::class.java, android.widget.TextView.BufferType::class.java)
                 env.hookBefore(setTextMethod) { param ->
+                    // 全应用所有 TextView 的每次 setText 都会进入本回调（列表滚动时每帧多次），
+                    // 先做最廉价的判断并把常见开销挡在前面：无 id 直接返回，避免
+                    // ContextWrapper 链遍历与资源名解析这些较贵的操作。
                     val tv = param.thisObject as? android.widget.TextView ?: return@hookBefore
                     if (tv.id == android.view.View.NO_ID) return@hookBefore
+
+                    val text = param.args[0] as? CharSequence ?: return@hookBefore
+                    val textStr = text.toString()
+                    // 绝大多数 set 目标是普通文本；短文本不可能是带简介的详情页描述，
+                    // 提前返回同时避免对高频小文本做 toString 之外的工作。
+                    if (textStr.length < MIN_DESC_TEXT_LENGTH) return@hookBefore
 
                     val ctx = tv.context ?: return@hookBefore
                     var activity: android.app.Activity? = null
@@ -72,8 +81,6 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                     val resName = runCatching { tv.resources.getResourceEntryName(tv.id) }.getOrNull()?.lowercase() ?: return@hookBefore
                     if (!isTargetDescResName(resName)) return@hookBefore
 
-                    val text = param.args[0] as? CharSequence ?: return@hookBefore
-                    val textStr = text.toString()
                     if (textStr.isNotBlank() && !textStr.contains("下载视频")) {
                         tv.isFocusable = true
                         tv.isClickable = true
@@ -392,6 +399,9 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
     }
 
     private companion object {
+        /** 简介正文必然超过这个长度；更短的 setText 直接 bypass，降低全局 hook 的常驻开销。 */
+        private const val MIN_DESC_TEXT_LENGTH = 24
+
         private val ALLOWED_DESC_RES_NAMES = setOf(
             "desc",
             "tv_desc",

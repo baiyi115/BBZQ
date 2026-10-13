@@ -240,7 +240,7 @@ internal class VideoStatsOverlayController(
             for (key in listOf("bvid", "bv_id", "video_bvid", "url", "link")) {
                 val value = runCatching { intent.getStringExtra(key) }.getOrNull()
                 if (!value.isNullOrBlank()) {
-                    val match = Regex("""BV1[a-zA-Z0-9]{9}""").find(value)
+                    val match = BV1_REGEX.find(value)
                     if (match != null) return match.value
                 }
             }
@@ -252,9 +252,9 @@ internal class VideoStatsOverlayController(
             // 2. Check intent data uri
             val dataStr = intent.data?.toString().orEmpty()
             if (dataStr.isNotBlank()) {
-                val match = Regex("""BV1[a-zA-Z0-9]{9}""").find(dataStr)
+                val match = BV1_REGEX.find(dataStr)
                 if (match != null) return match.value
-                val avMatch = Regex("""av([0-9]+)""", RegexOption.IGNORE_CASE).find(dataStr)
+                val avMatch = AV_REGEX.find(dataStr)
                 if (avMatch != null) {
                     val avNum = avMatch.groupValues[1].toLongOrNull()
                     if (avNum != null && avNum > 0L) return SkipVideoAdState.bvidFromAid(avNum)
@@ -271,7 +271,7 @@ internal class VideoStatsOverlayController(
         if (view is TextView) {
             val text = view.text?.toString().orEmpty()
             if (text.isNotBlank()) {
-                val match = Regex("""BV1[a-zA-Z0-9]{9}""").find(text)
+                val match = BV1_REGEX.find(text)
                 if (match != null) return match.value
             }
         }
@@ -409,6 +409,9 @@ internal class VideoStatsOverlayController(
         @Volatile var instance: VideoStatsOverlayController? = null
         @Volatile var currentBvid: String? = null
         @Volatile var currentCid: Long? = null
+
+        private val BV1_REGEX = Regex("""BV1[a-zA-Z0-9]{9}""")
+        private val AV_REGEX = Regex("""av([0-9]+)""", RegexOption.IGNORE_CASE)
 
         /** Keeps the process-wide last-seen ids and credits the same playback to its video page. */
         fun recordPlayback(bvid: String?, cid: Long?) {

@@ -14,6 +14,12 @@ class MethodHookParam internal constructor(
     private var returnEarly = false
     private var resultValue: Any? = null
 
+    val isArgsModified: Boolean
+        get() = (args as? HookArgsList)?.isModified ?: true
+
+    val argsArray: Array<Any?>
+        get() = (args as? HookArgsList)?.snapshot() ?: args.toTypedArray()
+
     var result: Any?
         get() = resultValue
         set(value) {
@@ -28,11 +34,88 @@ class MethodHookParam internal constructor(
 
     internal fun shouldReturnEarly(): Boolean = returnEarly
 
-    fun invokeOriginalMethod(): Any? = chain.proceed(args.toTypedArray())
+    fun invokeOriginalMethod(): Any? =
+        if (isArgsModified) chain.proceed(argsArray) else chain.proceed()
+}
+
+/**
+ * 包装框架传入参数列表的轻量 MutableList。
+ *
+ * 绝大多数 hook 只是读取参数或检查条件，从不修改参数。
+ * 只有发生真实修改（set/add/remove）时才克隆底层列表并置 isModified 为 true；
+ * 未修改时直接 chain.proceed() 原样传递，完全避免每次拦截的 toTypedArray 分配。
+ */
+internal class HookArgsList(
+    private val rawArgs: List<Any?>,
+) : AbstractMutableList<Any?>() {
+    private var backingList: ArrayList<Any?>? = null
+    var isModified: Boolean = false
+        private set
+
+    override val size: Int
+        get() = backingList?.size ?: rawArgs.size
+
+    override fun get(index: Int): Any? =
+        backingList?.get(index) ?: rawArgs[index]
+
+    override fun set(index: Int, element: Any?): Any? {
+        val list = ensureBackingList()
+        isModified = true
+        return list.set(index, element)
+    }
+
+    override fun add(index: Int, element: Any?) {
+        val list = ensureBackingList()
+        isModified = true
+        list.add(index, element)
+    }
+
+    override fun removeAt(index: Int): Any? {
+        val list = ensureBackingList()
+        isModified = true
+        return list.removeAt(index)
+    }
+
+    private fun ensureBackingList(): ArrayList<Any?> {
+        val current = backingList
+        if (current != null) return current
+        val created = ArrayList<Any?>(rawArgs.size)
+        created.addAll(rawArgs)
+        backingList = created
+        return created
+    }
+
+    fun snapshot(): Array<Any?> =
+        backingList?.toTypedArray() ?: rawArgs.toTypedArray()
 }
 
 typealias Hooker = (MethodHookParam) -> Unit
 typealias Replacer = (MethodHookParam) -> Any?
+
+/**
+ * 在 hook 注册时预先解析出返回值的强制转换器，彻底消除每次拦截执行时的反射查询。
+ */
+internal fun resolveResultCoercer(executable: Executable): (Any?) -> Any? {
+    if (executable !is Method) return { it }
+    val returnType = executable.returnType
+    if (returnType == java.lang.Void.TYPE || returnType == Void::class.java) {
+        return { null }
+    }
+    if (returnType.isPrimitive) {
+        return when (returnType) {
+            java.lang.Boolean.TYPE -> { value -> value ?: java.lang.Boolean.FALSE }
+            java.lang.Integer.TYPE -> { value -> value ?: 0 }
+            java.lang.Long.TYPE -> { value -> value ?: 0L }
+            java.lang.Float.TYPE -> { value -> value ?: 0.0f }
+            java.lang.Double.TYPE -> { value -> value ?: 0.0 }
+            java.lang.Byte.TYPE -> { value -> value ?: 0.toByte() }
+            java.lang.Short.TYPE -> { value -> value ?: 0.toShort() }
+            java.lang.Character.TYPE -> { value -> value ?: '\u0000' }
+            else -> { value -> value }
+        }
+    }
+    return { it }
+}
 
 fun safeCoerceResult(executable: Executable, value: Any?): Any? {
     if (executable !is Method) return value
@@ -59,6 +142,7 @@ fun safeCoerceResult(executable: Executable, value: Any?): Any? {
 fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
     runCatching {
         executable.isAccessible = true
+        val coercer = resolveResultCoercer(executable)
         xposed.hook(executable)
             .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
             .intercept { chain ->
@@ -66,7 +150,7 @@ fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
                     chain = chain,
                     executable = executable,
                     thisObject = chain.getThisObject(),
-                    args = chain.getArgs().toMutableList(),
+                    args = HookArgsList(chain.getArgs()),
                 )
                 runCatching {
                     hooker(param)
@@ -74,9 +158,11 @@ fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
                     log("Hook before failed at ${executable.declaringClass.name}.${executable.name}", throwable)
                 }
                 if (param.shouldReturnEarly()) {
-                    safeCoerceResult(executable, param.result)
+                    coercer(param.result)
+                } else if (param.isArgsModified) {
+                    chain.proceed(param.argsArray)
                 } else {
-                    chain.proceed(param.args.toTypedArray())
+                    chain.proceed()
                 }
             }
         true
@@ -88,6 +174,7 @@ fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
 fun RoamingEnv.hookAfter(executable: Executable, hooker: Hooker) {
     runCatching {
         executable.isAccessible = true
+        val coercer = resolveResultCoercer(executable)
         xposed.hook(executable)
             .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
             .intercept { chain ->
@@ -95,16 +182,16 @@ fun RoamingEnv.hookAfter(executable: Executable, hooker: Hooker) {
                     chain = chain,
                     executable = executable,
                     thisObject = chain.getThisObject(),
-                    args = chain.getArgs().toMutableList(),
+                    args = HookArgsList(chain.getArgs()),
                 )
-                val initial = chain.proceed(param.args.toTypedArray())
+                val initial = chain.proceed()
                 param.setInitialResult(initial)
                 runCatching {
                     hooker(param)
                 }.onFailure { throwable ->
                     log("Hook after failed at ${executable.declaringClass.name}.${executable.name}", throwable)
                 }
-                safeCoerceResult(executable, param.result)
+                coercer(param.result)
             }
     }.onFailure { throwable ->
         log("Failed to register hookAfter at ${executable.declaringClass.name}.${executable.name}", throwable)
@@ -114,6 +201,7 @@ fun RoamingEnv.hookAfter(executable: Executable, hooker: Hooker) {
 fun RoamingEnv.replace(executable: Executable, replacer: Replacer) {
     runCatching {
         executable.isAccessible = true
+        val coercer = resolveResultCoercer(executable)
         xposed.hook(executable)
             .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
             .intercept { chain ->
@@ -121,15 +209,15 @@ fun RoamingEnv.replace(executable: Executable, replacer: Replacer) {
                     chain = chain,
                     executable = executable,
                     thisObject = chain.getThisObject(),
-                    args = chain.getArgs().toMutableList(),
+                    args = HookArgsList(chain.getArgs()),
                 )
                 val computed = runCatching {
                     replacer(param)
                 }.getOrElse { throwable ->
                     log("Hook replace failed at ${executable.declaringClass.name}.${executable.name}, invoking original", throwable)
-                    return@intercept chain.proceed(param.args.toTypedArray())
+                    return@intercept if (param.isArgsModified) chain.proceed(param.argsArray) else chain.proceed()
                 }
-                safeCoerceResult(executable, computed)
+                coercer(computed)
             }
     }.onFailure { throwable ->
         log("Failed to register replace at ${executable.declaringClass.name}.${executable.name}", throwable)
@@ -139,6 +227,7 @@ fun RoamingEnv.replace(executable: Executable, replacer: Replacer) {
 fun RoamingEnv.intercept(executable: Executable, block: (XposedInterface.Chain) -> Any?) {
     runCatching {
         executable.isAccessible = true
+        val coercer = resolveResultCoercer(executable)
         xposed.hook(executable)
             .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
             .intercept { chain ->
@@ -146,9 +235,9 @@ fun RoamingEnv.intercept(executable: Executable, block: (XposedInterface.Chain) 
                     block(chain)
                 }.getOrElse { throwable ->
                     log("Hook intercept failed at ${executable.declaringClass.name}.${executable.name}", throwable)
-                    chain.proceed(chain.getArgs().toTypedArray())
+                    chain.proceed()
                 }
-                safeCoerceResult(executable, res)
+                coercer(res)
             }
     }.onFailure { throwable ->
         log("Failed to register intercept at ${executable.declaringClass.name}.${executable.name}", throwable)

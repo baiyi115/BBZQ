@@ -20,6 +20,10 @@ import io.github.bbzq.feats.hookBefore
 class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
     private var currentVideoDetailActivity: java.lang.ref.WeakReference<Activity>? = null
 
+    /** 已挂过手势监听器的 decor 视图，弱引用避免持有 Activity 的 decor 泄漏。 */
+    private val installedGestureListeners =
+        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+
     override fun startHook() {
         if (env.processName != env.packageName) return
         val application = env.hostContext as? Application ?: return
@@ -91,9 +95,12 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
             runCatching {
                 val decor = activity.window?.decorView ?: return@runCatching
                 decor.systemGestureExclusionRects = emptyList<Rect>()
-                decor.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
-                    if (decor.systemGestureExclusionRects.isNotEmpty()) {
-                        decor.systemGestureExclusionRects = emptyList<Rect>()
+                // 本方法会在每次 resume 与 configuration change 时调用，
+                // 不能重复挂监听器：decor 每次布局都会回调全部监听器，会随时间累积。
+                if (!installedGestureListeners.add(decor)) return@runCatching
+                decor.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
+                    if (view.systemGestureExclusionRects.isNotEmpty()) {
+                        view.systemGestureExclusionRects = emptyList<Rect>()
                     }
                 }
             }
