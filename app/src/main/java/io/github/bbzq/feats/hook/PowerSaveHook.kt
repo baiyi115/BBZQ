@@ -6,11 +6,14 @@ import android.graphics.drawable.Drawable
 import android.text.TextUtils
 import android.view.View
 import android.widget.RelativeLayout
+import android.widget.TextView
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.RoamingEnv
 import io.github.bbzq.feats.allMethods
+import io.github.bbzq.feats.callMethod
 import io.github.bbzq.feats.findClassOrNull
+import io.github.bbzq.feats.hookAfterAllConstructors
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.methodOrNull
 import java.lang.reflect.Modifier
@@ -40,8 +43,10 @@ import java.util.concurrent.ConcurrentHashMap
  *   仍在跑；列表里的直播徽章、合集与选集行、播放列表标题这些位置还有若干无限循环的 Lottie
  *   图标（按资源名解析 `live_badge_lottie`、`lottie_wave*`、`icon_play`）；播放器操作区与
  *   左下角背景音乐挂件共用的药丸视图则会下载服务端下发的 SVGA 逐帧循环播放，里面的文字还用
- *   了 TextView 原生跑马灯。这几处分别吞掉回调转发、按视图 id 拦 `playAnimation`、挡住药丸
- *   内的 `startAnimation` 与 `setSelected`，都只让动画定格，图标和文字仍在原处。
+ *   了 TextView 原生跑马灯；详情页顶部的标签行则是另一种胶囊，背景音乐、话题与标签都用
+ *   `CustomMarqueeTextView` 在 `onDraw` 里自绘跑马灯。这几处分别吞掉回调转发、按视图 id 拦
+ *   `playAnimation`、挡住药丸内的 `startAnimation` 与 `setSelected`、关掉自绘跑马灯的开关，
+ *   都只让动画定格，图标和文字仍在原处。
  * - 播放日志：`AbrParamsInterface.GetDdSwitch` 是所有 `ijkplayer.*` 实验开关的统一入口，
  *   其中吞吐日志在播放期间持续记录网络细节。
  *
@@ -173,14 +178,16 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
         installed += installPlayerPillSVGAFreeze()
         installed += installPlayerPillMarqueeFreeze()
+        installed += installCustomMarqueeFreeze()
         return installed
     }
 
     /**
      * 播放页药丸里文字的跑马灯。
      *
-     * 播放器操作区（音乐发现、活动、贴纸这些入口）与左下角背景音乐挂件用的是同一个药丸视图，
-     * 它给文字配了 `setEllipsize(MARQUEE)`、`setSingleLine(true)` 与 `setSelected(true)`，
+     * 播放器操作区（背景音乐、音乐发现、活动、贴纸、话题这些入口）与左下角背景音乐挂件是两块
+     * 同形状的相对布局药丸：挂件版多一个 SVGA 图标，操作区里的普通版本没有。它们都给内部
+     * TextView 配了 `setEllipsize(MARQUEE)`、`setSingleLine(true)` 与 `setSelected(true)`，
      * 也就是 Android 原生跑马灯：选中态会让 TextView 把整段文字按帧平移重绘，文字一直滚。
      * 这里把药丸内部的选中态挡回去、省略方式改成尾部截断，文字静态显示开头部分。
      */
@@ -213,6 +220,36 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     /**
+     * 详情页文字胶囊里自绘的跑马灯。
+     *
+     * 视频详情页顶部的标签行里，背景音乐、话题与标签共用同一种 26dp 胶囊
+     * （`theseus_module_tag_v2`），里面的文字来自
+     * `com.bilibili.playerbizcommonv2.view.CustomMarqueeTextView`。这个控件不走系统跑马灯，
+     * 而是在 `onDraw` 里自己算位移、自己 `invalidate` 循环：只要内部开关开着且文字比控件宽，
+     * 文字就会一直滚，上面挡 `setSelected` / `setEllipsize` 的两个钩子对它无效。
+     * 这里把开关按回关闭，文字回落到父类 `TextView.onDraw` 静态绘制；同时把省略方式退回尾部
+     * 截断，免得这个 focusable 的胶囊拿到焦点后再触发系统跑马灯。位置与尺寸都不变。
+     * 同一个控件也被播放器左下角的背景音乐挂件复用，一并定格。
+     */
+    private fun installCustomMarqueeFreeze(): Int {
+        val customMarquee = classLoader.findClassOrNull(CUSTOM_MARQUEE_TEXT_VIEW) ?: return 0
+        var installed = 0
+
+        customMarquee.methodOrNull(SET_CUSTOM_MARQUEE_ENABLE, java.lang.Boolean.TYPE)?.let { method ->
+            env.hookBefore(method) { param -> param.args[0] = false }
+            installed++
+        }
+
+        // 开关在构造时按属性初始化，默认就是打开的，所以没人调用 setter 的实例也要在构造后关掉。
+        installed += env.hookAfterAllConstructors(customMarquee) { param ->
+            val view = param.thisObject as? TextView ?: return@hookAfterAllConstructors
+            view.callMethod(SET_CUSTOM_MARQUEE_ENABLE, false)
+            view.callMethod(SET_ELLIPSIZE, TextUtils.TruncateAt.END)
+        }
+        return installed
+    }
+
+    /**
      * 播放页药丸里的动态图标。
      *
      * 药丸的图标有两条路：服务端给了 SVGA 就下动画并循环播（`getPlayTimes()` 在动态显示
@@ -241,8 +278,10 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
     /**
      * 判断视图是否位于播放页那些药丸内部。
      *
-     * 药丸视图是相对布局的子类，并且同时持有 SVGA 动画、图片与文字三个子视图。这两个挂件
-     * （操作区与背景音乐）用的都是它，按形状判断比写死混淆后的短类名稳，容器换成别的也照样覆盖。
+     * 药丸是相对布局的子类，内部同时挂着一块图片与一段文字，背景音乐挂件版还会多一个 SVGA
+     * 图标，操作区里的普通版本没有。再要求它自己声明 `setMaxWidth` 给文字限宽，就能把药丸和
+     * 播放页里其他同样持有图片和文字的相对布局（加载占位、直播入场特效这些）区分开。按形状
+     * 判断比写死混淆后的短类名稳，容器换成别的实现也照样覆盖。
      */
     private fun View.isInsidePlayerPill(): Boolean {
         var parent = this.parent
@@ -255,9 +294,13 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun isPlayerPillClass(type: Class<*>): Boolean =
         RelativeLayout::class.java.isAssignableFrom(type) &&
-            type.declaredFields.any { it.type.name == SVGA_IMAGE_VIEW } &&
             type.declaredFields.any { it.type.name == BILI_IMAGE_VIEW } &&
-            type.declaredFields.any { it.type.name == TEXT_VIEW }
+            type.declaredFields.any { it.type.name == TEXT_VIEW } &&
+            type.declaredMethods.any { method ->
+                method.name == SET_MAX_WIDTH &&
+                    method.returnType == Void.TYPE &&
+                    method.parameterTypes.contentEquals(arrayOf(java.lang.Integer.TYPE))
+            }
 
     /** 播放期间的网络日志开关，见 `AbrParamsInterface.GetDdSwitch`。 */
     private fun installPlaybackLogFilter(): Int {
@@ -295,7 +338,7 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             "tv.danmaku.bili.services.videodownload.action.AutoStartAllTaskIfNeedAction"
         const val GET_DD_SWITCH = "GetDdSwitch"
 
-        /** 播放页药丸的组成部件：SVGA 动画、图片与文字，三个类型都不在混淆范围。 */
+        /** 播放页药丸的组成部件：SVGA 动画、图片与文字，这几个类型都不在混淆范围。 */
         const val SVGA_IMAGE_VIEW = "com.opensource.svgaplayer.SVGAImageView"
         const val SVGA_START_ANIMATION = "startAnimation"
         const val BILI_IMAGE_VIEW = "com.bilibili.lib.image2.view.BiliImageView"
@@ -303,6 +346,13 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         const val SET_SELECTED = "setSelected"
         const val SET_ELLIPSIZE = "setEllipsize"
         const val TRUNCATE_AT = "android.text.TextUtils\$TruncateAt"
+
+        /** 药丸自己声明 `setMaxWidth` 给内部文字限宽，靠它把药丸和普通的图文相对布局区分开。 */
+        const val SET_MAX_WIDTH = "setMaxWidth"
+
+        /** 详情页文字胶囊用的自绘跑马灯控件，见 `installCustomMarqueeFreeze`。 */
+        const val CUSTOM_MARQUEE_TEXT_VIEW = "com.bilibili.playerbizcommonv2.view.CustomMarqueeTextView"
+        const val SET_CUSTOM_MARQUEE_ENABLE = "setCustomMarqueeEnable"
 
         /**
          * 需要定格的图标。这些 Lottie 都是无限循环播放的装饰动画，
