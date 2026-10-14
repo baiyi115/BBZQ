@@ -5,6 +5,7 @@ import android.content.Intent
 import android.graphics.drawable.Drawable
 import android.text.TextUtils
 import android.view.View
+import android.widget.RelativeLayout
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.RoamingEnv
@@ -13,6 +14,7 @@ import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.methodOrNull
 import java.lang.reflect.Modifier
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * 播放与后台的功耗治理。
@@ -36,10 +38,10 @@ import java.lang.reflect.Modifier
  *   （`loop message error, try next node`），是典型的后台耗电源。锁屏通知走厂商通道，不受影响。
  * - 装饰动画：CTC 头像挂件的涟漪动画通过一个回调转发器让整棵 View 树每帧失效，暂停视频后
  *   仍在跑；列表里的直播徽章、合集与选集行、播放列表标题这些位置还有若干无限循环的 Lottie
- *   图标（按资源名解析 `live_badge_lottie`、`lottie_wave*`、`icon_play`）；播放器左下角的
- *   背景音乐挂件则会下载服务端下发的 SVGA 逐帧循环播放，曲名用的还是 TextView 原生跑马灯。
- *   这几处分别吞掉回调转发、按视图 id 拦 `playAnimation`、挡下挂件内的 `startAnimation`
- *   与 `setSelected`，都只让动画定格，图标和文字仍在原处。
+ *   图标（按资源名解析 `live_badge_lottie`、`lottie_wave*`、`icon_play`）；播放器操作区与
+ *   左下角背景音乐挂件共用的药丸视图则会下载服务端下发的 SVGA 逐帧循环播放，里面的文字还用
+ *   了 TextView 原生跑马灯。这几处分别吞掉回调转发、按视图 id 拦 `playAnimation`、挡住药丸
+ *   内的 `startAnimation` 与 `setSelected`，都只让动画定格，图标和文字仍在原处。
  * - 播放日志：`AbrParamsInterface.GetDdSwitch` 是所有 `ijkplayer.*` 实验开关的统一入口，
  *   其中吞吐日志在播放期间持续记录网络细节。
  *
@@ -47,6 +49,9 @@ import java.lang.reflect.Modifier
  * [io.github.bbzq.feats.hook.mbgeb.P2pDisableHook] 处理，后者按本机硬解能力筛选，比一律禁用更准。
  */
 class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
+
+    /** 视图类是否播放页药丸的判断结果，按类缓存，避免每次走一遍字段检查。 */
+    private val pillClassCache = ConcurrentHashMap<Class<*>, Boolean>()
 
     override fun startHook() {
         // 预热服务既可能由主进程拉起，也可能由 :web 自己拉起（广告 WebView 池的 web 变体），
@@ -166,21 +171,20 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             }
         }
 
-        installed += installBgmWidgetSVGAFreeze()
-        installed += installBgmWidgetMarqueeFreeze()
+        installed += installPlayerPillSVGAFreeze()
+        installed += installPlayerPillMarqueeFreeze()
         return installed
     }
 
     /**
-     * 背景音乐名称的跑马灯。
+     * 播放页药丸里文字的跑马灯。
      *
-     * 挂件给曲名用的 TextView 配了 `setEllipsize(MARQUEE)`、`setSingleLine(true)` 与
-     * `setSelected(true)`，这是 Android 原生跑马灯的三件套：选中态会让 TextView 把整段
-     * 文字按帧平移重绘，曲名就不会停下来。这里只处理挂件内部的这个 TextView，
-     * 把选中态挡回去、省略方式改成尾部截断，曲名以省略号静态显示开头部分。
+     * 播放器操作区（音乐发现、活动、贴纸这些入口）与左下角背景音乐挂件用的是同一个药丸视图，
+     * 它给文字配了 `setEllipsize(MARQUEE)`、`setSingleLine(true)` 与 `setSelected(true)`，
+     * 也就是 Android 原生跑马灯：选中态会让 TextView 把整段文字按帧平移重绘，文字一直滚。
+     * 这里把药丸内部的选中态挡回去、省略方式改成尾部截断，文字静态显示开头部分。
      */
-    private fun installBgmWidgetMarqueeFreeze(): Int {
-        val bgmWidget = classLoader.findClassOrNull(BGM_WIDGET) ?: return 0
+    private fun installPlayerPillMarqueeFreeze(): Int {
         val textView = classLoader.findClassOrNull(TEXT_VIEW) ?: return 0
         var installed = 0
 
@@ -188,7 +192,7 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             env.hookBefore(method) { param ->
                 if (param.args.getOrNull(0) != true) return@hookBefore
                 val view = param.thisObject as? View ?: return@hookBefore
-                if (view.hasAncestorOfType(bgmWidget)) param.args[0] = false
+                if (view.isInsidePlayerPill()) param.args[0] = false
             }
             installed++
         }
@@ -197,9 +201,9 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             ?.let { textView.methodOrNull(SET_ELLIPSIZE, it) }
             ?.let { method ->
                 env.hookBefore(method) { param ->
-                    if (param.args.getOrNull(0) == null) return@hookBefore
+                    if (param.args.getOrNull(0) != TextUtils.TruncateAt.MARQUEE) return@hookBefore
                     val view = param.thisObject as? View ?: return@hookBefore
-                    if (view.hasAncestorOfType(bgmWidget)) {
+                    if (view.isInsidePlayerPill()) {
                         param.args[0] = TextUtils.TruncateAt.END
                     }
                 }
@@ -209,18 +213,16 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     /**
-     * 播放器左下角背景音乐挂件里的动态图标。
+     * 播放页药丸里的动态图标。
      *
-     * 这个挂件的图标有两条路：服务端给了 SVGA 就下动画并循环播（`getPlayTimes()` 在动态显示
-     * 打开时返回 0，也就是无限循环），没给才退回静态图。SVGA 是矢量动画，每次循环都要逐帧
-     * 解码重绘，停掉它图标仍停在第一帧。
+     * 药丸的图标有两条路：服务端给了 SVGA 就下动画并循环播（`getPlayTimes()` 在动态显示
+     * 打开时返回 0，也就是无限循环），没给才退回静态图。SVGA 是矢量动画，每次循环都要
+     * 逐帧解码重绘，停掉它图标仍停在第一帧。
      *
-     * 这里只拦挂件内部的 SVGA：以 `GeminiPlayerBgmWidget` 作为祖先类型判断，
-     * 直播间的入场特效等其他 SVGA 不受影响。
+     * 只拦药丸内部的 SVGA，直播间的入场特效等其他 SVGA 不受影响。
      */
-    private fun installBgmWidgetSVGAFreeze(): Int {
+    private fun installPlayerPillSVGAFreeze(): Int {
         val svgaImageView = classLoader.findClassOrNull(SVGA_IMAGE_VIEW) ?: return 0
-        val bgmWidget = classLoader.findClassOrNull(BGM_WIDGET) ?: return 0
         return svgaImageView.declaredMethods
             .filter { method ->
                 method.name == SVGA_START_ANIMATION &&
@@ -230,20 +232,32 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             .onEach { method ->
                 env.hookBefore(method) { param ->
                     val view = param.thisObject as? View ?: return@hookBefore
-                    if (view.hasAncestorOfType(bgmWidget)) param.result = null
+                    if (view.isInsidePlayerPill()) param.result = null
                 }
             }
             .size
     }
 
-    private fun View.hasAncestorOfType(type: Class<*>): Boolean {
+    /**
+     * 判断视图是否位于播放页那些药丸内部。
+     *
+     * 药丸视图是相对布局的子类，并且同时持有 SVGA 动画、图片与文字三个子视图。这两个挂件
+     * （操作区与背景音乐）用的都是它，按形状判断比写死混淆后的短类名稳，容器换成别的也照样覆盖。
+     */
+    private fun View.isInsidePlayerPill(): Boolean {
         var parent = this.parent
         while (parent is View) {
-            if (type.isInstance(parent)) return true
+            if (pillClassCache.getOrPut(parent.javaClass) { isPlayerPillClass(parent.javaClass) }) return true
             parent = parent.parent
         }
         return false
     }
+
+    private fun isPlayerPillClass(type: Class<*>): Boolean =
+        RelativeLayout::class.java.isAssignableFrom(type) &&
+            type.declaredFields.any { it.type.name == SVGA_IMAGE_VIEW } &&
+            type.declaredFields.any { it.type.name == BILI_IMAGE_VIEW } &&
+            type.declaredFields.any { it.type.name == TEXT_VIEW }
 
     /** 播放期间的网络日志开关，见 `AbrParamsInterface.GetDdSwitch`。 */
     private fun installPlaybackLogFilter(): Int {
@@ -281,10 +295,10 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             "tv.danmaku.bili.services.videodownload.action.AutoStartAllTaskIfNeedAction"
         const val GET_DD_SWITCH = "GetDdSwitch"
 
-        /** 播放器 BGM 挂件与它的 SVGA 播放器，两者都在不在混淆范围的包里。 */
-        const val BGM_WIDGET = "com.bilibili.app.gemini.ugc.feature.GeminiPlayerBgmWidget"
+        /** 播放页药丸的组成部件：SVGA 动画、图片与文字，三个类型都不在混淆范围。 */
         const val SVGA_IMAGE_VIEW = "com.opensource.svgaplayer.SVGAImageView"
         const val SVGA_START_ANIMATION = "startAnimation"
+        const val BILI_IMAGE_VIEW = "com.bilibili.lib.image2.view.BiliImageView"
         const val TEXT_VIEW = "android.widget.TextView"
         const val SET_SELECTED = "setSelected"
         const val SET_ELLIPSIZE = "setEllipsize"
