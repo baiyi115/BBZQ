@@ -1,7 +1,6 @@
 package io.github.bbzq.feats.download
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
@@ -68,16 +67,6 @@ class DownloadSourcePlanTest {
         assertEquals(1, DownloadSourcePlan.plan(uposUrl, emptyList()).size)
         assertEquals(uposUrl, DownloadSourcePlan.plan(uposUrl, emptyList())[0].url)
         assertTrue(DownloadSourcePlan.plan("", listOf("upos-sz-mirrorcos.bilivideo.com")).isEmpty())
-    }
-
-    @Test
-    fun testContentRangeTotal() {
-        assertEquals(1000L, DownloadSourcePlan.contentRangeTotal("bytes 0-99/1000"))
-        assertEquals(3L, DownloadSourcePlan.contentRangeTotal("bytes 1-2/3"))
-        // 服务端未知总长度
-        assertNull(DownloadSourcePlan.contentRangeTotal("bytes 0-99/*"))
-        assertNull(DownloadSourcePlan.contentRangeTotal(null))
-        assertNull(DownloadSourcePlan.contentRangeTotal("garbage"))
     }
 
     private fun hostOf(url: String): String =

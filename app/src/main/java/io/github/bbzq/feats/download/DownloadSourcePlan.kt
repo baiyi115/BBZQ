@@ -42,14 +42,6 @@ object DownloadSourcePlan {
         return configured + original
     }
 
-    /**
-     * 取 `Content-Range: bytes a-b/total` 里的总长度。
-     *
-     * 已下载区间之后是总长度；`*`（服务端未知）或无法解析时返回 `null`。
-     */
-    fun contentRangeTotal(header: String?): Long? =
-        header?.substringAfterLast('/', "")?.trim()?.toLongOrNull()?.takeIf { it > 0L }
-
     const val ORIGINAL_LABEL = "playurl 源站"
 
     private const val UPGCXCODE_PATH = "/upgcxcode/"

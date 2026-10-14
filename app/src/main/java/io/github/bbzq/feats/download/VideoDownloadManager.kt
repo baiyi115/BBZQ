@@ -5,6 +5,7 @@ import android.os.Handler
 import android.os.Looper
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.ModuleSettingsBridge
+import io.github.bbzq.feats.HttpRange
 import io.github.bbzq.feats.hook.CustomCdnProcessor
 import io.github.bbzq.feats.hook.NetworkTypeDetector
 import okhttp3.Call
@@ -348,7 +349,7 @@ object VideoDownloadManager {
         progressCallback: (Int) -> Unit,
     ): Long {
         val total = probeTotal(sources) ?: throw IOException("无法确定文件长度")
-        val pieces = PiecePlanning.plan(total, sources.size)
+        val pieces = PiecePlanning.plan(0L, total, sources.size, PiecePlanning.DOWNLOAD)
             ?: throw IOException("不值得并行：长度 $total，源数 ${sources.size}")
 
         val completed = java.util.concurrent.atomic.AtomicLong(0L)
@@ -361,7 +362,6 @@ object VideoDownloadManager {
             Thread {
                 try {
                     RandomAccessFile(dest, "rw").use { file ->
-                        val buffer = ByteArray(COPY_BUFFER_SIZE)
                         for (piece in bucket) {
                             // 分片自己换源重试：从分配到的那个源开始，绕一圈
                             var lastError: Throwable? = null
@@ -369,7 +369,7 @@ object VideoDownloadManager {
                             for (offset in sources.indices) {
                                 val source = sources[(bucketIndex + offset) % sources.size]
                                 try {
-                                    fetchPiece(file, buffer, source.url, piece)
+                                    fetchPiece(file, source.url, piece)
                                     DownloadHealth.recordHostSuccess(hostOf(source))
                                     written = true
                                     break
@@ -400,38 +400,11 @@ object VideoDownloadManager {
         return total
     }
 
-    /** 取一个分片写进文件。要求服务端返回 206；回了 200 说明 Range 被忽略，无法定位。 */
-    private fun fetchPiece(
-        file: RandomAccessFile,
-        buffer: ByteArray,
-        url: String,
-        piece: PiecePlanning.Piece,
-    ) {
-        val request = Request.Builder()
-            .url(url)
-            .header("Accept-Encoding", "identity")
-            .header("Referer", "https://www.bilibili.com")
-            .header("User-Agent", USER_AGENT)
-            .header("Range", "bytes=${piece.start}-${piece.end}")
-            .build()
-
-        client.newCall(request).execute().use { response ->
-            if (response.code != 206) throw IOException("HTTP ${response.code} for piece ${piece.index}")
-            val body = response.body ?: throw IOException("Empty response body")
-            body.byteStream().buffered(COPY_BUFFER_SIZE).use { input ->
-                file.seek(piece.start)
-                var filled = 0L
-                while (filled < piece.length) {
-                    val want = minOf(buffer.size.toLong(), piece.length - filled).toInt()
-                    val read = input.read(buffer, 0, want)
-                    if (read == -1) break
-                    file.write(buffer, 0, read)
-                    filled += read
-                }
-                if (filled != piece.length) {
-                    throw IOException("分片 ${piece.index} 不完整：$filled / ${piece.length}")
-                }
-            }
+    /** 取一个分片写进文件的对应偏移。206 契约与长度校验由 [HttpRange.read] 负责。 */
+    private fun fetchPiece(file: RandomAccessFile, url: String, piece: PiecePlanning.Piece) {
+        file.seek(piece.start)
+        HttpRange.read(client, url, piece.start, piece.end) { buffer, offset, length ->
+            file.write(buffer, offset, length)
         }
     }
 
@@ -448,7 +421,7 @@ object VideoDownloadManager {
             val total = runCatching {
                 client.newCall(request).execute().use { response ->
                     if (response.code != 206) return@use null
-                    DownloadSourcePlan.contentRangeTotal(response.header("Content-Range"))
+                    HttpRange.totalOf(response.header("Content-Range"))
                 }
             }.getOrNull()
             if (total != null && total > 0L) return total
@@ -480,7 +453,7 @@ object VideoDownloadManager {
         client.newCall(request).execute().use { response ->
             // 断点恰好等于文件长度时服务端回 416：文件其实已经完整
             if (response.code == 416) {
-                val total = DownloadSourcePlan.contentRangeTotal(response.header("Content-Range")) ?: 0L
+                val total = HttpRange.totalOf(response.header("Content-Range")) ?: 0L
                 if (total > 0L && resumeFrom == total) return total
                 throw IOException("HTTP 416 during download")
             }
@@ -490,7 +463,7 @@ object VideoDownloadManager {
             val resuming = resumeFrom > 0L && response.code == 206
             val offset = if (resuming) resumeFrom else 0L
             val total = if (resuming) {
-                DownloadSourcePlan.contentRangeTotal(response.header("Content-Range")) ?: 0L
+                HttpRange.totalOf(response.header("Content-Range")) ?: 0L
             } else {
                 body.contentLength().takeIf { it > 0L } ?: 0L
             }
