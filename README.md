@@ -186,6 +186,26 @@ BBZQ 是一款适配 Modern API 的哔哩哔哩功能增强模组，采用 Kotli
 
 ---
 
+## 致谢
+
+部分功能与设计参考了以下开源项目。
+
+### Make Bilibili Great Than Ever Before
+
+- 项目：https://github.com/SukkaW/Make-Bilibili-Great-Than-Ever-Before
+- 许可证：MIT
+
+设置页同名栏目下的功能移植自该浏览器用户脚本，按 Android 端可行的方式用 Kotlin 重新实现。
+
+### BiliBTR
+
+- 项目：https://github.com/lwjlw/io.github.lwjlw.bilibtr
+- 许可证：GPL-3.0
+
+「播放多 CDN 加速」参考了它的整体思路：在宿主进程内起一个本地 HTTP 代理，把媒体地址改写成指向它，由代理按候选节点并发取数后再交给播放器。
+
+---
+
 ## 许可证
 
 本项目使用木兰公共许可证，第 2 版（Mulan PubL v2）。 
