@@ -527,20 +527,20 @@
 
     <!-- 功耗 -->
     <string name="section_power">功耗</string>
-    <string name="power_save_enabled_title">尝试降低功耗</string>
-    <string name="power_save_enabled_summary">拦掉后台自杀重启、预热服务与预载、启动时自动续传下载、应用列表上传和内推长连接，并让头像挂件、直播徽章、播放器药丸与详情页胶囊的装饰动画和滚动文字定格。未完成的下载需要手动进下载页续传。</string>
+    <string name="power_save_enabled_title">降低功耗</string>
+    <string name="power_save_enabled_summary">拦截后台自动重启、预加载服务与数据上传，并让头像挂件、直播徽章、播放器药丸与详情页胶囊的装饰动画和滚动文字定格。\n注意：未完成的下载需要手动进入下载页续传。</string>
     <string name="mbgeb_about_title">关于本栏目</string>
-    <string name="mbgeb_about_summary">以下功能由同名浏览器脚本移植而来，均为实验性改动，默认关闭。</string>
-    <string name="mbgeb_p2p_disable_title">关闭 P2P / PCDN</string>
+    <string name="mbgeb_about_summary">以下功能移植自同名浏览器脚本，均为实验性改动，默认关闭。</string>
+    <string name="mbgeb_p2p_disable_title">关闭 P2P 与 PCDN</string>
     <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载，减少上行带宽占用、流量与耗电。</string>
-    <string name="mbgeb_prefer_hardware_decoder_title">只用硬件解码的编码</string>
+    <string name="mbgeb_prefer_hardware_decoder_title">过滤只能软解的编码</string>
     <string name="mbgeb_prefer_hardware_decoder_summary">过滤掉本机只能软解的视频编码（多数机型上是 AV1），降低播放时的耗电与发热。</string>
     <string name="mbgeb_parallel_download_title">多主机并行下载</string>
-    <string name="mbgeb_parallel_download_summary">把文件切成多段，从多台 CDN 同时下载大文件。会成倍占用带宽，蜂窝网络下自动关闭。</string>
+    <string name="mbgeb_parallel_download_summary">从多台 CDN 同时下载同一文件，加快大文件下载速度。\n注意：会成倍占用带宽，蜂窝网络下自动关闭。</string>
     <string name="mbgeb_live_original_quality_title">直播强制原画</string>
-    <string name="mbgeb_live_original_quality_summary">强制以原画档位请求直播流；已经是原画或更高档位时不做改动。</string>
+    <string name="mbgeb_live_original_quality_summary">强制使用直播原画档位；已经是原画或更高档位时不做改动。</string>
     <string name="mbgeb_live_backup_url_title">直播多 CDN 回退</string>
     <string name="mbgeb_live_backup_url_summary">直播主线路卡顿或失败时自动切换到备用 CDN 地址。</string>
     <string name="mbgeb_media_proxy_title">播放多 CDN 加速</string>
-    <string name="mbgeb_media_proxy_summary">由本地代理接管取流，按你配好的 CDN 节点并发下载，改善起播与卡顿。会略微增加流量。</string>
+    <string name="mbgeb_media_proxy_summary">从已配置的 CDN 节点并发取流，改善起播速度与播放卡顿。\n注意：会略微增加流量。</string>
 </resources>
