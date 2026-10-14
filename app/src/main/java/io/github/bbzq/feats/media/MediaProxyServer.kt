@@ -37,8 +37,11 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 object MediaProxyServer {
 
-    /** 只监听回环地址。 */
-    private val LOOPBACK: InetAddress = InetAddress.getLoopbackAddress()
+    /**
+     * 回环地址。必须显式指定 IPv4 的 `127.0.0.1`，不能用 `getLoopbackAddress()`：
+     * 它在 IPv6 栈上返回 `::1`，而改写出的地址是 `127.0.0.1`，播放器会连不上。
+     */
+    private val LOOPBACK: InetAddress = InetAddress.getByName("127.0.0.1")
 
     private const val ACCEPT_BACKLOG = 16
     private const val MAX_WORKERS = 8
