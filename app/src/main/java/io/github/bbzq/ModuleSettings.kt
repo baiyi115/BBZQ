@@ -75,6 +75,9 @@ object ModuleSettings {
 
     /** MBGTEB 移植：直播使用备用 CDN 地址（多 CDN 回退）。 */
     const val KEY_LIVE_BACKUP_URL_ENABLED = "live_backup_url_enabled"
+
+    /** 播放多 CDN 加速：由本地代理接管取流。 */
+    const val KEY_MEDIA_PROXY_ENABLED = "media_proxy_enabled"
     const val MAX_CDN_PRIORITY_NODES = 5
     const val KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED = "purify_home_recommend_ad_enabled"
     const val KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED = "purify_home_recommend_picture_enabled"
@@ -334,6 +337,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_PARALLEL_DOWNLOAD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PARALLEL_DOWNLOAD_ENABLED, false) },
         ExportableConfigSpec(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_LIVE_ORIGINAL_QUALITY_ENABLED, false) },
         ExportableConfigSpec(KEY_LIVE_BACKUP_URL_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_LIVE_BACKUP_URL_ENABLED, false) },
+        ExportableConfigSpec(KEY_MEDIA_PROXY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_MEDIA_PROXY_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_AD_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_PICTURE_ENABLED, false) },
         ExportableConfigSpec(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_PURIFY_HOME_RECOMMEND_GAME_PROMO_ENABLED, false) },
@@ -763,6 +767,9 @@ object ModuleSettings {
 
     fun isLiveBackupUrlEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_LIVE_BACKUP_URL_ENABLED, false)
+
+    fun isMediaProxyEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_MEDIA_PROXY_ENABLED, false)
 
     fun getHomeRecommendTitleKeywordsText(prefs: SharedPreferences): String =
         prefs.getString(KEY_HOME_RECOMMEND_TITLE_KEYWORDS, "").orEmpty()

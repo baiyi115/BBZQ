@@ -541,4 +541,6 @@
     <string name="mbgeb_live_original_quality_summary">强制以原画档位请求直播流；已经是原画或更高档位时不做改动。</string>
     <string name="mbgeb_live_backup_url_title">直播多 CDN 回退</string>
     <string name="mbgeb_live_backup_url_summary">直播主线路卡顿或失败时自动切换到备用 CDN 地址。</string>
+    <string name="mbgeb_media_proxy_title">播放多 CDN 加速</string>
+    <string name="mbgeb_media_proxy_summary">由本地代理接管取流，按你配好的 CDN 节点并发下载，改善起播与卡顿。会略微增加流量。</string>
 </resources>

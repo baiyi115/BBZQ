@@ -4,6 +4,7 @@ import android.content.SharedPreferences
 import io.github.bbzq.ModuleSettings
 import io.github.bbzq.feats.allFields
 import io.github.bbzq.feats.callMethod
+import io.github.bbzq.feats.media.MediaProxyServer
 import java.lang.reflect.Modifier
 
 object CustomCdnProcessor {
@@ -119,9 +120,14 @@ object CustomCdnProcessor {
         val usableHosts = CdnAddressPolicy.usableHosts(hosts, source)
         if (usableHosts.isEmpty()) return
 
-        val rewrittenBase = replaceHost(source, usableHosts[0])
+        // 媒体代理可用时，base 指向它：由代理按同一份 CDN 列表并发取数。
+        // 备用地址仍保持直连，代理挂了播放器还有直接回源的路。
+        val proxyBase = MediaProxyServer.rewrite(source)
+
+        val rewrittenBase = proxyBase ?: replaceHost(source, usableHosts[0])
         val rewrittenBackups = buildList {
-            usableHosts.drop(1).take(4).forEach { h -> add(replaceHost(source, h)) }
+            val direct = if (proxyBase == null) usableHosts.drop(1) else usableHosts
+            direct.take(4).forEach { host -> add(replaceHost(source, host)) }
             add(source)
         }.filter { it != rewrittenBase }.distinct()
 
