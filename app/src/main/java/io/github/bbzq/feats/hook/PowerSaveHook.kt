@@ -1,5 +1,6 @@
 package io.github.bbzq.feats.hook
 
+import android.animation.AnimatorSet
 import android.content.Context
 import android.content.Intent
 import android.graphics.drawable.Drawable
@@ -17,6 +18,8 @@ import io.github.bbzq.feats.hookAfterAllConstructors
 import io.github.bbzq.feats.hookBefore
 import io.github.bbzq.feats.methodOrNull
 import java.lang.reflect.Modifier
+import java.util.Collections
+import java.util.WeakHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -44,9 +47,11 @@ import java.util.concurrent.ConcurrentHashMap
  *   图标（按资源名解析 `live_badge_lottie`、`lottie_wave*`、`icon_play`）；播放器操作区与
  *   左下角背景音乐挂件共用的药丸视图则会下载服务端下发的 SVGA 逐帧循环播放，里面的文字还用
  *   了 TextView 原生跑马灯；详情页顶部的标签行则是另一种胶囊，背景音乐、话题与标签都用
- *   `CustomMarqueeTextView` 在 `onDraw` 里自绘跑马灯。这几处分别吞掉回调转发、按视图 id 拦
- *   `playAnimation`、挡住药丸内的 `startAnimation` 与 `setSelected`、关掉自绘跑马灯的开关，
- *   都只让动画定格，图标和文字仍在原处。
+ *   `CustomMarqueeTextView` 在 `onDraw` 里自绘跑马灯；关注页与动态页的直播头像外还挂着两个
+ *   `LivingAvatarAnimationView`，各自用 `AnimatorSet` 反复播放一圈扩散的波纹。这几处分别
+ *   吞掉回调转发、按视图 id 或素材名拦 `playAnimation`、挡住药丸内的 `startAnimation` 与
+ *   `setSelected`、关掉自绘跑马灯的开关、挡下波纹的启动入口，都只让动画定格，图标、文字与
+ *   头像仍在原处。
  * - 播放日志：`AbrParamsInterface.GetDdSwitch` 是所有 `ijkplayer.*` 实验开关的统一入口，
  *   其中吞吐日志在播放期间持续记录网络细节。
  *
@@ -57,6 +62,10 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     /** 视图类是否播放页药丸的判断结果，按类缓存，避免每次走一遍字段检查。 */
     private val pillClassCache = ConcurrentHashMap<Class<*>, Boolean>()
+
+    /** 按素材名命中、需要定格的 Lottie 视图，弱引用避免拖住已经回收的列表项。 */
+    private val frozenAssetViews: MutableSet<View> =
+        Collections.newSetFromMap(WeakHashMap<View, Boolean>())
 
     override fun startHook() {
         // 预热服务既可能由主进程拉起，也可能由 :web 自己拉起（广告 WebView 池的 web 变体），
@@ -163,23 +172,78 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
             }
 
         val frozenIds = resolveFrozenLottieIds()
-        if (frozenIds.isNotEmpty()) {
+        val assetHooks = installLottieAssetFreeze()
+        if (frozenIds.isNotEmpty() || assetHooks > 0) {
             val lottieDrawable = classLoader.findClassOrNull(LOTTIE_DRAWABLE)
             LOTTIE_PLAY_METHODS.forEach { name ->
                 lottieDrawable?.methodOrNull(name)?.let { method ->
                     env.hookBefore(method) { param ->
                         val view = (param.thisObject as? Drawable)?.callback as? View
-                        if (view != null && view.id in frozenIds) param.result = null
+                        if (view != null && (view.id in frozenIds || view in frozenAssetViews)) {
+                            param.result = null
+                        }
                     }
                     installed++
                 }
             }
         }
+        installed += assetHooks
 
         installed += installPlayerPillSVGAFreeze()
         installed += installPlayerPillMarqueeFreeze()
         installed += installCustomMarqueeFreeze()
+        installed += installLivingAvatarWaveFreeze()
         return installed
+    }
+
+    /**
+     * 关注页与动态页头像上的直播波纹。
+     *
+     * 正在直播的 UP 头像外面套的是 `PendantAvatarFrameLayout`，它按 `bili_living_avatar_layout`
+     * 挂上两个 `LivingAvatarAnimationView`：每个都持有一个 `AnimatorSet`，靠 `View.post` 反复
+     * 启动，在头像周围画一圈向外扩散的波纹。它只是装饰，一屏多个直播头像就是十几个常驻动画。
+     *
+     * `b()` 是启动入口（`PendantAvatarFrameLayout.i()` 等调用），`c()` 负责第二圈错峰启动与续播
+     * （`LivingAvatarAnimationView$f` 的 `onStart` 只是在调度第二个视图），两者都挡掉，波纹不再扩散，
+     * 停在起始半径画成静态圆环，头像与「直播中」标签不受影响。成员名被混淆成单字母，所以先按
+     * 「类里持有 AnimatorSet」确认结构没变，再按名字挂。
+     *
+     * 同一份布局里「直播中」标签还带一个 Lottie（`bili_avatar_living_animation.json`），
+     * 它的视图 id 是通用的 `animation`，按 id 拦会误伤别的动画，所以走 [installLottieAssetFreeze]。
+     */
+    private fun installLivingAvatarWaveFreeze(): Int {
+        val avatarView = classLoader.findClassOrNull(LIVING_AVATAR_VIEW) ?: return 0
+        if (avatarView.declaredFields.none { it.type == AnimatorSet::class.java }) {
+            log("startHook: PowerSave skipped $LIVING_AVATAR_VIEW, no AnimatorSet field")
+            return 0
+        }
+        return avatarView.declaredMethods
+            .filter { method ->
+                method.name in LIVING_AVATAR_START_METHODS &&
+                    method.parameterCount == 0 &&
+                    method.returnType == Void.TYPE &&
+                    !Modifier.isStatic(method.modifiers)
+            }
+            .onEach { method -> env.hookBefore(method) { param -> param.result = null } }
+            .size
+    }
+
+    /**
+     * 按素材名定格 Lottie。
+     *
+     * 有些装饰动画的视图 id 是通用的 `animation`，按 id 拦会误伤别的动画，改成在
+     * `setAnimation(String)` 里认素材名，命中后记住这个视图，再由播放钩子拦下它的播放，
+     * 图标仍停在第一帧。布局里的 `lottie_fileName` 也走这个方法（见 `LottieAnimationView.z`）。
+     */
+    private fun installLottieAssetFreeze(): Int {
+        val lottieView = classLoader.findClassOrNull(LOTTIE_ANIMATION_VIEW) ?: return 0
+        val setAnimation = lottieView.methodOrNull(SET_ANIMATION, String::class.java) ?: return 0
+        env.hookBefore(setAnimation) { param ->
+            val asset = param.args.getOrNull(0) as? String ?: return@hookBefore
+            if (asset !in FROZEN_LOTTIE_ASSETS) return@hookBefore
+            (param.thisObject as? View)?.let { frozenAssetViews.add(it) }
+        }
+        return 1
     }
 
     /**
@@ -353,6 +417,32 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         /** 详情页文字胶囊用的自绘跑马灯控件，见 `installCustomMarqueeFreeze`。 */
         const val CUSTOM_MARQUEE_TEXT_VIEW = "com.bilibili.playerbizcommonv2.view.CustomMarqueeTextView"
         const val SET_CUSTOM_MARQUEE_ENABLE = "setCustomMarqueeEnable"
+
+        /** 直播头像的波纹控件，`b()` 启动、`c()` 续播，见 `installLivingAvatarWaveFreeze`。 */
+        const val LIVING_AVATAR_VIEW = "tv.danmaku.bili.widget.avatar.LivingAvatarAnimationView"
+        val LIVING_AVATAR_START_METHODS = listOf("b", "c")
+
+        /**
+         * 视图 id 不具辨识度、改按素材名识别的 Lottie，见 `installLottieAssetFreeze`。
+         *
+         * 这些都是「直播中 / 播放中」的装饰指示图标，全部声明了 `lottie_loop`，
+         * 停在第一帧不影响它表达的状态。刻意不收加载类动画（`player_loading_tv`、
+         * `live_loading`、`uppper_player_tv_loading` 等），那些纹路停住会看着像卡死。
+         */
+        const val LOTTIE_ANIMATION_VIEW = "com.airbnb.lottie.LottieAnimationView"
+        const val SET_ANIMATION = "setAnimation"
+        val FROZEN_LOTTIE_ASSETS = listOf(
+            // 头像上的「直播中」徽章，关注页、动态、私信等 20 个布局共用
+            "bili_avatar_living_animation.json",
+            // 直播卡片与多视角入口上的直播图标，16dp 自动循环
+            "live_ic_live.json",
+            // 番剧选集封面与播客快捷播放的「播放中」，两者共用 id lottie_playing
+            "bangumi_detail_playing.json",
+            "music_podcast_animation_playing.json",
+            // 故事流与高光列表项的「播放中」
+            "story_playing_icon.json",
+            "player_is_playing_day.json",
+        )
 
         /**
          * 需要定格的图标。这些 Lottie 都是无限循环播放的装饰动画，
