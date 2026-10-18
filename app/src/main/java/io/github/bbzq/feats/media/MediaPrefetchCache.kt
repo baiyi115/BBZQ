@@ -1,97 +1,265 @@
 package io.github.bbzq.feats.media
 
-import java.util.concurrent.Executors
+import io.github.bbzq.feats.RangeRequestBudget
+import java.io.Closeable
+import java.io.IOException
+import java.io.InterruptedIOException
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 
-/**
- * 已取回的媒体块的内存缓存，并负责提前取下一块。
- *
- * 播放器是按顺序读的：当前块读完必然来要下一块。提前把下一块取回来，块边界那次请求
- * 就能零等待命中内存，而不是再等一个往返。这是 Web 端 thread-ripper 的 read-ahead
- * 在本地代理里的对应物。
- *
- * 容量按**总字节数**封顶并按 LRU 淘汰，不按条目数：块有大有小，按条数会在块变大时
- * 悄悄吃掉几百兆。默认 24 MiB，约等于 4 MiB 一块的六块。
- *
- * 取数据的动作**不在锁内**：那是秒级的网络操作，持锁会把同时到达的其他请求全堵住。
- */
+/** 前台与预读共享同一个正在增长的块；读者只读取已经发布、不会再修改的数组前缀。 */
 object MediaPrefetchCache {
-
-    private const val MAX_TOTAL_BYTES = 24L * 1024 * 1024
-    private const val MAX_IN_FLIGHT = 2
-
-    private class Entry(val start: Long, val bytes: ByteArray, val total: Long?)
-
-    /** 访问顺序的 LRU：get 也算一次访问。 */
-    private val entries = LinkedHashMap<String, Entry>(16, 0.75f, true)
-
-    private var cachedBytes = 0L
-    private val inFlight = HashSet<String>()
-
-    private val worker = Executors.newSingleThreadExecutor { runnable ->
-        Thread(runnable, "bbzq-media-prefetch").apply { isDaemon = true }
+    private val cache = ProgressiveMediaCache { sources, range, total, budget, headers, sink ->
+        MediaRangeFetcher.stream(sources, range, total, budget, headers, sink)
     }
 
-    /**
-     * 缓存里是否完整覆盖了 `[start, end]`。命中时返回对应的一段。
-     *
-     * 只返回被覆盖的部分：播放器可能只要其中一小段，多给反而不合规。
-     */
-    @Synchronized
-    fun get(url: String, start: Long, end: Long): Pair<ByteArray, Long?>? {
-        val entry = entries[key(url, start)] ?: return null
-        if (start < entry.start) return null
-        val offset = (start - entry.start).toInt()
-        val length = (end - start + 1).toInt()
-        if (offset < 0 || offset + length > entry.bytes.size) return null
-        return entry.bytes.copyOfRange(offset, offset + length) to entry.total
-    }
+    internal fun acquire(sources: List<String>, url: String, range: MediaProxyProtocol.Range, total: Long?) =
+        cache.acquire(sources, url, range, total)
 
-    /**
-     * 后台把 `[start, start + length - 1]` 取回来存着。
-     *
-     * 已经缓存过或正在取的直接跳过，避免同一个块被重复拉。
-     */
     fun prefetch(sources: List<String>, url: String, start: Long, length: Long, total: Long?) {
-        if (length <= 0L || length > MAX_TOTAL_BYTES) return
-        if (sources.isEmpty()) return
-        val key = key(url, start)
-        synchronized(this) {
-            if (entries.containsKey(key) || key in inFlight) return
-            if (inFlight.size >= MAX_IN_FLIGHT) return
-            inFlight += key
+        if (length !in 1..MediaProxyProtocol.CHUNK_BYTES || start < 0 || start > Long.MAX_VALUE - length) return
+        cache.prefetch(sources, url, MediaProxyProtocol.Range(start, start + length - 1), total)
+    }
+
+    fun clear() = cache.clear()
+}
+
+internal typealias MediaBlockLoader = (
+    List<String>, MediaProxyProtocol.Range, Long?, RangeRequestBudget,
+    (MediaRangeFetcher.Meta) -> Unit, (ByteArray, Int, Int) -> Unit,
+) -> Unit
+
+/** 无 Android 依赖，可用受控的流式 loader 验证并发、内存计账和取消。 */
+internal class ProgressiveMediaCache(
+    private val maxBytes: Long = 24L * 1024 * 1024,
+    private val timeoutMs: Long = 30_000,
+    private val maxEntries: Int = 64,
+    private val loader: MediaBlockLoader,
+) : Closeable {
+    init { require(maxBytes > 0 && maxEntries > 0) }
+
+    private val lock = Object()
+    private val entries = LinkedHashMap<Long, Entry>(16, 0.75f, true)
+    private var nextId = 0L
+    private var reservedBytes = 0L
+    private var activeLoads = 0
+    private var speculativeLoads = 0
+    private val workers = ThreadPoolExecutor(3, 3, 0, TimeUnit.SECONDS, ArrayBlockingQueue(3), { runnable ->
+        Thread(runnable, "bbzq-media-block").apply { isDaemon = true }
+    })
+
+    internal class Entry(
+        val id: Long, val url: String, val range: MediaProxyProtocol.Range,
+        var speculative: Boolean, val budget: RangeRequestBudget,
+    ) {
+        val reserved = MediaProxyProtocol.length(range)
+        var meta: MediaRangeFetcher.Meta? = null
+        var bytes: ByteArray? = null
+        var available = 0
+        var readers = 0
+        var done = false
+        var workerDone = false
+        var resident = true
+        var accounted = true
+        var failure: Exception? = null
+    }
+
+    internal inner class Lease internal constructor(private val entry: Entry, private val requested: MediaProxyProtocol.Range) : Closeable {
+        private var closed = false
+        fun stream(onReady: (MediaRangeFetcher.Meta) -> Unit, sink: (ByteArray, Int, Int) -> Unit): MediaRangeFetcher.Meta {
+            val meta = synchronized(lock) {
+                while (entry.meta == null) {
+                    checkOpen()
+                    await(entry)
+                }
+                checkOpen()
+                val source = entry.meta!!
+                val end = minOf(requested.end!!, source.end)
+                if (end < requested.start) throw IOException("range is beyond EOF")
+                MediaRangeFetcher.Meta(requested.start, end, source.total, source.contentType)
+            }
+            onReady(meta)
+            var offset = (requested.start - entry.range.start).toInt()
+            val limit = (meta.end - entry.range.start + 1).toInt()
+            while (offset < limit) {
+                val chunk = synchronized(lock) {
+                    while (entry.available <= offset) {
+                        checkOpen()
+                        if (entry.done) throw IOException("incomplete media block")
+                        await(entry)
+                    }
+                    checkOpen()
+                    entry.bytes!! to minOf(entry.available - offset, limit - offset, 64 * 1024)
+                }
+                sink(chunk.first, offset, chunk.second)
+                offset += chunk.second
+            }
+            return meta
         }
-        worker.execute {
-            try {
-                val (bytes, meta) = MediaRangeFetcher.fetch(
-                    sources,
-                    MediaProxyProtocol.Range(start, start + length - 1),
-                    total,
-                )
-                synchronized(this) { put(key, Entry(start, bytes, meta.total)) }
-            } catch (t: Throwable) {
-                // 预读失败无所谓：播放器来要时会走正常路径重取
-            } finally {
-                synchronized(this) { inFlight -= key }
+
+        private fun checkOpen() {
+            if (closed) throw IOException("media reader closed")
+            entry.failure?.let { throw IOException("media block failed", it) }
+        }
+
+        override fun close() = synchronized(lock) {
+            if (!closed) {
+                closed = true
+                entry.readers--
+                // 最后一批字节发布后，loader 仍可能在退出/健康统计阶段；不能误取消完整缓存。
+                val bodyComplete = entry.bytes?.let { entry.available == it.size } == true
+                if (entry.readers == 0 && !entry.speculative && !entry.done && !bodyComplete) {
+                    discard(entry, IOException("media reader left"))
+                }
+                releaseIfUnused(entry)
+                lock.notifyAll()
             }
         }
     }
 
-    @Synchronized
-    fun clear() {
-        entries.clear()
-        cachedBytes = 0L
+    fun acquire(sources: List<String>, url: String, range: MediaProxyProtocol.Range, total: Long?): Lease = synchronized(lock) {
+        val entry = find(url, range) ?: run {
+            // Seek 后旧位置的在途预读不再抢占当前播放；完成的缓存仍可供回退使用。
+            entries.values.filter { it.url == url && it.speculative && !it.workerDone && it.readers == 0 }
+                .forEach { discard(it, IOException("media prefetch superseded")) }
+            create(sources, url, range, total, false)
+        }
+        if (entry.speculative && !entry.workerDone) speculativeLoads--
+        entry.speculative = false
+        entry.budget.promoteToForeground()
+        entry.readers++
+        lease(entry, range)
     }
 
-    /** 调用方须持有本对象的锁。 */
-    private fun put(key: String, entry: Entry) {
-        entries.put(key, entry)?.let { cachedBytes -= it.bytes.size }
-        cachedBytes += entry.bytes.size
-        val iterator = entries.entries.iterator()
-        while (cachedBytes > MAX_TOTAL_BYTES && iterator.hasNext()) {
-            cachedBytes -= iterator.next().value.bytes.size
-            iterator.remove()
+    private fun lease(entry: Entry, range: MediaProxyProtocol.Range): Lease = Lease(entry, range)
+
+    fun prefetch(sources: List<String>, url: String, range: MediaProxyProtocol.Range, total: Long?) {
+        synchronized(lock) {
+            if (speculativeLoads >= 1 || activeLoads >= 2 || find(url, range) != null) return
+            // 预读是可丢弃的；不排无限任务，也不给播放器线程制造异常。
+            try { create(sources, url, range, total, true) } catch (_: IOException) { }
         }
     }
 
-    private fun key(url: String, start: Long): String = "$start@$url"
+    private fun find(url: String, range: MediaProxyProtocol.Range): Entry? {
+        val entry = entries.values.firstOrNull { entry ->
+            entry.failure == null && entry.url == url && entry.range.start <= range.start &&
+                (entry.range.end!! >= range.end!! ||
+                    (entry.meta?.let { it.total == it.end + 1 && it.end >= range.start } == true))
+        } ?: return null
+        return entries[entry.id] // 刷新 LRU；包含关系命中不要求起点完全一致。
+    }
+
+    private fun create(sources: List<String>, url: String, range: MediaProxyProtocol.Range, total: Long?, speculative: Boolean): Entry {
+        val length = range.end?.let { it - range.start + 1 } ?: 0
+        if (sources.isEmpty() || range.start < 0 || length !in 1..MediaProxyProtocol.CHUNK_BYTES) throw IOException("invalid cache range")
+        if (activeLoads >= 6) throw IOException("media loader busy")
+        val iterator = entries.values.iterator()
+        while ((reservedBytes + length > maxBytes || entries.size >= maxEntries) && iterator.hasNext()) {
+            val old = iterator.next()
+            if (old.workerDone && old.readers == 0) {
+                iterator.remove()
+                old.resident = false
+                releaseIfUnused(old)
+            }
+        }
+        if (reservedBytes + length > maxBytes || entries.size >= maxEntries) throw IOException("media cache busy")
+        val entry = Entry(++nextId, url, range, speculative, RangeRequestBudget(timeoutMs, speculative))
+        entries[entry.id] = entry
+        reservedBytes += length
+        activeLoads++
+        if (speculative) speculativeLoads++
+        try {
+            workers.execute { load(entry, sources, total) }
+        } catch (e: Exception) {
+            entry.workerDone = true
+            activeLoads--
+            if (entry.speculative) speculativeLoads--
+            discard(entry, e)
+            throw IOException("media loader rejected", e)
+        }
+        return entry
+    }
+
+    private fun load(entry: Entry, sources: List<String>, total: Long?) {
+        try {
+            entry.budget.remainingNanos()
+            loader(sources, entry.range, total, entry.budget, { meta ->
+                synchronized(lock) {
+                    entry.budget.remainingNanos()
+                    if (meta.start != entry.range.start || meta.length !in 1..entry.reserved || entry.meta != null) {
+                        throw IOException("invalid media metadata")
+                    }
+                    entry.meta = meta
+                    entry.bytes = ByteArray(meta.length.toInt())
+                    lock.notifyAll()
+                }
+            }) { bytes, offset, length ->
+                synchronized(lock) {
+                    entry.budget.remainingNanos()
+                    val target = entry.bytes ?: throw IOException("media body before headers")
+                    if (length > target.size - entry.available) throw IOException("media body too long")
+                    bytes.copyInto(target, entry.available, offset, offset + length)
+                    entry.available += length
+                    lock.notifyAll()
+                }
+            }
+            synchronized(lock) {
+                if (entry.bytes == null || entry.available != entry.bytes!!.size) throw IOException("short media body")
+                entry.done = true
+            }
+        } catch (e: Exception) {
+            synchronized(lock) { discard(entry, e) }
+        } finally {
+            entry.budget.cancel()
+            synchronized(lock) {
+                entry.workerDone = true
+                activeLoads--
+                if (entry.speculative) speculativeLoads--
+                releaseIfUnused(entry)
+                lock.notifyAll()
+            }
+        }
+    }
+
+    private fun await(entry: Entry) {
+        val remaining = entry.budget.remainingNanos()
+        try {
+            TimeUnit.NANOSECONDS.timedWait(lock, remaining)
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+            throw InterruptedIOException("media reader interrupted").apply { initCause(e) }
+        }
+    }
+
+    private fun discard(entry: Entry, reason: Exception) {
+        entry.failure = reason
+        entry.done = true
+        if (entry.resident) entries.remove(entry.id)
+        entry.resident = false
+        entry.budget.cancel()
+        releaseIfUnused(entry)
+        lock.notifyAll()
+    }
+
+    private fun releaseIfUnused(entry: Entry) {
+        if (!entry.resident && entry.workerDone && entry.readers == 0 && entry.accounted) {
+            entry.accounted = false
+            reservedBytes -= entry.reserved
+            entry.bytes = null
+        }
+    }
+
+    fun clear() = synchronized(lock) {
+        entries.values.toList().forEach { discard(it, IOException("media cache cleared")) }
+    }
+
+    internal fun reservedByteCount(): Long = synchronized(lock) { reservedBytes }
+    internal fun activeLoadCount(): Int = synchronized(lock) { activeLoads }
+
+    override fun close() {
+        clear()
+        workers.shutdown() // 已取消的排队任务仍运行 finally，归还预留容量。
+    }
 }

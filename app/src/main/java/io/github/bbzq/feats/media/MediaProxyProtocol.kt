@@ -75,7 +75,7 @@ object MediaProxyProtocol {
     fun resolve(requested: Range?, total: Long?): Range {
         val start = requested?.start ?: 0L
         val wanted = requested?.end ?: Long.MAX_VALUE
-        val capped = minOf(wanted, start + CHUNK_BYTES - 1)
+        val capped = minOf(wanted, start + minOf(CHUNK_BYTES - 1, Long.MAX_VALUE - start))
         val end = if (total != null) minOf(capped, total - 1) else capped
         return Range(start, maxOf(end, start))
     }

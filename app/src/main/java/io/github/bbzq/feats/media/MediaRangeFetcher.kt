@@ -1,152 +1,184 @@
 package io.github.bbzq.feats.media
 
 import io.github.bbzq.feats.HttpRange
+import io.github.bbzq.feats.RangeRequestBudget
 import io.github.bbzq.feats.download.DownloadHealth
 import io.github.bbzq.feats.download.PiecePlanning
 import io.github.bbzq.feats.hook.CustomCdnProcessor
 import okhttp3.OkHttpClient
 import java.io.IOException
-import java.util.concurrent.Callable
-import java.util.concurrent.ExecutionException
-import java.util.concurrent.Executors
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-/**
- * 从多台 CDN 并发取一段字节，并**按序边到边交**给调用方。
- *
- * 这是播放加速的取数核心：把播放器要的一块区间切成若干片，分散到不同的源上同时取，
- * 切分复用 [PiecePlanning]（与下载器同一份逻辑，只是参数不同）。
- *
- * 关键在于不等整块取齐：第一片到手就回调 [onReady]，此后每片就绪即交给 [sink]。
- * 整块拼好再给的话，播放器要为最慢的那一片等满一个 RTT，起播和块边界都会卡。
- *
- * 成功与失败都记进 [DownloadHealth]，选源时
- * [io.github.bbzq.feats.download.DownloadSourcePlan] 会据此把反复失败的源排到最后。
- */
+/** 小首段直接流出，尾片有界并行、按序渐进交付；排队和回源共用块预算。 */
 object MediaRangeFetcher {
-
-    private const val CONNECT_TIMEOUT_SECONDS = 5L
-    private const val READ_TIMEOUT_SECONDS = 20L
-
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(CONNECT_TIMEOUT_SECONDS, TimeUnit.SECONDS)
-            .readTimeout(READ_TIMEOUT_SECONDS, TimeUnit.SECONDS)
+            .connectTimeout(5, TimeUnit.SECONDS)
+            .readTimeout(20, TimeUnit.SECONDS)
             .build()
     }
-
     private val pool by lazy {
-        Executors.newFixedThreadPool(PiecePlanning.MEDIA_PROXY.maxPieces * 2) { runnable ->
-            Thread(runnable, "bbzq-media-fetch").apply { isDaemon = true }
-        }
+        ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, ArrayBlockingQueue(8), { runnable ->
+            Thread(runnable, "bbzq-media-piece").apply { isDaemon = true }
+        })
+    }
+    private const val LEAD_BYTES = 256L * 1024
+    private val tailPolicy = PiecePlanning.MEDIA_PROXY.copy(maxPieces = 3)
+
+    class Meta(val start: Long, val end: Long, val total: Long?, val contentType: String?) {
+        val length: Long get() = end - start + 1
     }
 
-    /** 首片就绪时可知的信息：文件总长度与内容类型。 */
-    class Meta(val total: Long?, val contentType: String?)
+    private class Tail(val piece: PiecePlanning.Piece, val buffer: MediaPieceBuffer, var future: Future<*>? = null)
+    private class Representation(val total: Long?, val entityTag: String?)
 
-    private class Fetched(val bytes: ByteArray, val total: Long?, val contentType: String?)
-
-    /**
-     * 取 [range] 这一段。区间须先经 [MediaProxyProtocol.resolve] 定下终点。
-     *
-     * [knownTotal] 为文件总长度，未知时传 `null`：**总长度未知就不切分**。片的终点会
-     * 越过文件末尾，那几片在每台源上都会失败。第一次请求顺便学到总长度，之后的请求
-     * 才会切。
-     *
-     * 调用顺序保证：[onReady] 恰好一次，且在第一个 [sink] 之前；[sink] 按片序调用，
-     * 收到的字节拼起来就是这一段。
-     *
-     * 第一片失败时抛异常且**尚未回调过**，调用方还能整条降级（比如回 302）；
-     * 之后失败时已经有字节交出去了，调用方只能断开这条连接。
-     */
-    fun stream(
-        sources: List<String>,
-        range: MediaProxyProtocol.Range,
-        knownTotal: Long?,
-        onReady: (Meta) -> Unit,
-        sink: (ByteArray) -> Unit,
+    internal fun stream(
+        sources: List<String>, range: MediaProxyProtocol.Range, knownTotal: Long?,
+        budget: RangeRequestBudget, onReady: (Meta) -> Unit, sink: (ByteArray, Int, Int) -> Unit,
     ) {
-        if (sources.isEmpty()) throw IOException("no media source available")
-        val end = range.end ?: throw IOException("range must be resolved before fetching")
-        val length = end - range.start + 1
-
-        val single = listOf(PiecePlanning.Piece(0, range.start, end))
-        val pieces = if (knownTotal == null) {
-            single
-        } else {
-            PiecePlanning.plan(range.start, length, sources.size, PiecePlanning.MEDIA_PROXY) ?: single
-        }
-
-        // 全部片一起提交：后面的片在前面的片等待输出时就已经在取了
-        val futures: List<Future<Fetched>> = pieces.map { piece ->
-            pool.submit(Callable { fetchPieceWithFallback(sources, piece) })
-        }
-
-        var announced = false
-        futures.forEach { future ->
-            val fetched = try {
-                future.get()
-            } catch (e: ExecutionException) {
-                throw (e.cause ?: e)
+        val epoch = MediaSourcePerformance.epoch()
+        val distinct = MediaSourcePerformance.rank(sources.distinct(), firstByte = true)
+        if (distinct.isEmpty()) throw IOException("no media source available")
+        val end = range.end ?: throw IOException("unresolved media range")
+        val length = MediaProxyProtocol.length(range)
+        if (range.start < 0 || length !in 1..MediaProxyProtocol.CHUNK_BYTES) throw IOException("invalid media range")
+        // 冷却节点只作回退，不能因轮转分片又把它提升成某片的首选。
+        val ready = distinct.filterNot { DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it)) }
+        val primaries = ready.ifEmpty { distinct.take(1) }
+        var tailPrimaries = primaries
+        val canParallel = !budget.isSpeculative && primaries.size > 1 && length >= 2 * PiecePlanning.MIN_PROXY_PIECE_BYTES
+        val leadEnd = if (canParallel) range.start + LEAD_BYTES - 1 else end
+        val failedSources = ConcurrentHashMap.newKeySet<String>()
+        val tails = ArrayList<Tail>(3)
+        var representation: Representation? = null
+        try {
+            readWithFallback(distinct, primaries, PiecePlanning.Piece(0, range.start, leadEnd), knownTotal, null, budget, epoch, failedSources, { response ->
+                val total = response.total ?: knownTotal
+                representation = Representation(total, response.strongEntityTag)
+                val tailReady = primaries.filterNot {
+                    it in failedSources || DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it))
+                }
+                tailPrimaries = MediaSourcePerformance.transferCandidates(tailReady.ifEmpty { primaries })
+                // 首段学到总长后，冷起播也可以并行；总长仍未知时只承诺已经验证的首段。
+                val outputEnd = if (canParallel && total != null) minOf(end, total - 1) else response.end
+                onReady(Meta(range.start, outputEnd, total, response.contentType))
+                if (response.end < outputEnd) {
+                    val start = response.end + 1
+                    val remaining = outputEnd - response.end
+                    val pieces = PiecePlanning.plan(start, remaining, tailPrimaries.size, tailPolicy)
+                        ?: listOf(PiecePlanning.Piece(0, start, outputEnd))
+                    pieces.forEach { piece ->
+                        val tail = Tail(piece, MediaPieceBuffer(budget))
+                        tails += tail
+                        try {
+                            tail.future = pool.submit {
+                                var error: Exception? = null
+                                try {
+                                    readWithFallback(distinct, tailPrimaries, tail.piece, total, representation, budget, epoch, failedSources, {}, tail.buffer::write)
+                                } catch (e: Exception) { error = e }
+                                finally { tail.buffer.finish(error) }
+                            }
+                        } catch (_: RejectedExecutionException) {
+                            // 资源繁忙时按序在当前加载线程取这片，不让线程池拒绝破坏已提交响应。
+                        }
+                    }
+                }
+            }, sink)
+            tails.forEach { tail ->
+                if (tail.future == null) {
+                    readWithFallback(distinct, tailPrimaries, tail.piece, representation?.total, representation, budget, epoch, failedSources, {}, sink)
+                } else {
+                    tail.buffer.streamTo(sink)
+                }
             }
-            // 按片序输出，所以每次拿到的就是下一片
-            if (!announced) {
-                announced = true
-                onReady(Meta(fetched.total, fetched.contentType))
-            }
-            sink(fetched.bytes)
+        } finally {
+            budget.cancel()
+            tails.forEach { it.buffer.cancel(); it.future?.cancel(true) }
+            if (tails.isNotEmpty()) pool.purge()
         }
     }
 
-    /** 一次取齐，供预读使用。 */
-    fun fetch(
-        sources: List<String>,
-        range: MediaProxyProtocol.Range,
-        knownTotal: Long?,
-    ): Pair<ByteArray, Meta> {
+    /** 测试/离线使用：只分配实际响应长度，不返回补零的数组尾部。 */
+    fun fetch(sources: List<String>, range: MediaProxyProtocol.Range, knownTotal: Long?): Pair<ByteArray, Meta> {
         var meta: Meta? = null
-        val collected = ArrayList<ByteArray>()
-        var size = 0
-        stream(sources, range, knownTotal, onReady = { meta = it }) { bytes ->
-            collected += bytes
-            size += bytes.size
-        }
-        val joined = ByteArray(size)
+        var bytes = ByteArray(0)
         var offset = 0
-        collected.forEach { chunk ->
-            chunk.copyInto(joined, offset)
-            offset += chunk.size
+        stream(sources, range, knownTotal, RangeRequestBudget(), onReady = {
+            meta = it
+            bytes = ByteArray(it.length.toInt())
+        }) { buffer, from, size ->
+            buffer.copyInto(bytes, offset, from, from + size)
+            offset += size
         }
-        return joined to (meta ?: Meta(null, null))
+        return bytes to (meta ?: throw IOException("no media metadata"))
     }
 
-    /** 一片在所有源上都试过才放弃；从分配到的源开始轮一圈。 */
-    private fun fetchPieceWithFallback(sources: List<String>, piece: PiecePlanning.Piece): Fetched {
-        var lastError: Throwable? = null
-        for (offset in sources.indices) {
-            val source = sources[(piece.index + offset) % sources.size]
+    private fun readWithFallback(
+        sources: List<String>, primaries: List<String>, piece: PiecePlanning.Piece,
+        knownTotal: Long?, representation: Representation?, budget: RangeRequestBudget, epoch: Long,
+        failedSources: MutableSet<String>,
+        onHeaders: (HttpRange.Response) -> Unit, write: (ByteArray, Int, Int) -> Unit,
+    ) {
+        val ranked = primaries + sources.filter { it !in primaries }
+        val (ready, fallback) = ranked.partition {
+            it !in failedSources && !DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it))
+        }
+        val assigned = primaries[piece.index % primaries.size]
+        val preferred = assigned.takeIf { it in ready } ?: ready.firstOrNull() ?: assigned
+        val ordered = listOf(preferred) + (ready + fallback).filter { it != preferred }
+        var delivered = 0L
+        var responseEnd = piece.end
+        var expectedTotal = representation?.total ?: knownTotal
+        var entityTag = representation?.entityTag
+        var published = false
+        var last: IOException? = null
+        for (source in ordered) {
+            budget.remainingNanos()
+            var downstreamFailure = false
+            val started = System.nanoTime()
+            val before = delivered
+            var firstByte = 0L
+            var sinkNanos = 0L
             try {
-                val fetched = fetchPiece(source, piece)
+                HttpRange.read(client, source, piece.start + delivered, responseEnd, onHeaders = { meta ->
+                    if (expectedTotal != null && expectedTotal != meta.total) throw IOException("media size changed between pieces")
+                    if (entityTag != null && entityTag != meta.strongEntityTag) throw IOException("media entity changed between pieces")
+                    if ((knownTotal != null || published) && meta.end != responseEnd) throw IOException("unexpected clipped piece")
+                    if (!published) {
+                        expectedTotal = meta.total ?: knownTotal
+                        entityTag = meta.strongEntityTag ?: entityTag
+                        responseEnd = meta.end
+                        published = true
+                        try { onHeaders(meta) } catch (e: Exception) { downstreamFailure = true; throw e }
+                    }
+                }, budget = budget, ifRange = entityTag,
+                    firstByteTimeoutMs = if (ordered.size > 1) 2500 else 0) { buffer, from, size ->
+                    val now = System.nanoTime()
+                    if (firstByte == 0L) firstByte = now
+                    try { write(buffer, from, size) } catch (e: Exception) { downstreamFailure = true; throw e }
+                    finally { sinkNanos += System.nanoTime() - now }
+                    delivered += size
+                }
+                MediaSourcePerformance.record(epoch, source, firstByte - started,
+                    System.nanoTime() - started - sinkNanos, delivered - before)
                 DownloadHealth.recordHostSuccess(CustomCdnProcessor.hostOf(source))
-                return fetched
-            } catch (failure: Throwable) {
-                lastError = failure
+                return
+            } catch (e: IOException) {
+                budget.remainingNanos()
+                if (downstreamFailure) throw e
+                failedSources += source
                 DownloadHealth.recordHostFailure(CustomCdnProcessor.hostOf(source))
+                // 只有强 ETag 能验证续传是同一内容；从已交付位置继续，绝不重放前缀。
+                if (published && (entityTag == null || expectedTotal == null)) throw e
+                if (delivered == responseEnd - piece.start + 1) return
+                last = e
             }
         }
-        throw IOException("piece ${piece.index} failed on every source", lastError)
-    }
-
-    /** 取单独一片，一次性读进内存。206 契约与长度校验由 [HttpRange.read] 负责。 */
-    private fun fetchPiece(url: String, piece: PiecePlanning.Piece): Fetched {
-        if (piece.length > Int.MAX_VALUE) throw IOException("piece too large: ${piece.length}")
-        val target = ByteArray(piece.length.toInt())
-        var offset = 0
-        val response = HttpRange.read(client, url, piece.start, piece.end) { buffer, from, length ->
-            buffer.copyInto(target, offset, from, from + length)
-            offset += length
-        }
-        return Fetched(target, response.total, response.contentType)
+        throw IOException("piece ${piece.index} failed on every source", last)
     }
 }

@@ -11,7 +11,11 @@ import java.io.IOException
 import java.net.InetAddress
 import java.net.ServerSocket
 import java.net.Socket
-import java.util.concurrent.Executors
+import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.SynchronousQueue
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -23,7 +27,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * 为什么是这个方向：Android 端拿不到播放器的读取回调（IJK 的拉流在 native，
  * `IAndroidIO` 与 `IMediaDataSource` 都没被启用，media3 也没打包 HTTP 数据源）。
- * 与其去拦读取，不如让播放器来读我们，这是唯一能拿到完整字节流的位置。
+ * 因此通过地址改写让播放器读取本地代理，在此处理完整的媒体字节流。
  *
  * 候选节点全部来自模块已有配置：`DownloadSourcePlan` 展开用户配的 CDN 优先列表，
  * 按 `CdnSpeedModel` 的实测速率排序、`DownloadHealth` 把反复失败的排到最后，最后以
@@ -32,8 +36,7 @@ import java.util.concurrent.atomic.AtomicBoolean
  * 每次请求只服务一块（[MediaProxyProtocol.CHUNK_BYTES]），并按序边到边交给播放器，
  * 不等整块取齐；同时把下一块提前取回来（[MediaPrefetchCache]）。
  *
- * 任何环节失败都回 `302` 指向原始地址，让播放器直接回源。宁可退化为直连，也不能
- * 因为代理出问题而没有画面。
+ * 提交响应前失败可回 `302`；开始输出后失败关闭连接，由播放器按 Range 重试。
  */
 object MediaProxyServer {
 
@@ -45,15 +48,20 @@ object MediaProxyServer {
 
     private const val ACCEPT_BACKLOG = 16
     private const val MAX_WORKERS = 8
-    private const val SOCKET_TIMEOUT_MS = 8000
+    private const val SOCKET_TIMEOUT_MS = 1500
+    private const val RESPONSE_TIMEOUT_SECONDS = 30L
     private const val MAX_HEADER_LENGTH = 8192
     private const val DEFAULT_CONTENT_TYPE = "video/mp4"
     private const val MAX_TRACKED_TOTALS = 64
 
     private val running = AtomicBoolean(false)
-    private val workers = Executors.newFixedThreadPool(MAX_WORKERS) { runnable ->
+    private val workers = ThreadPoolExecutor(MAX_WORKERS, MAX_WORKERS, 0, TimeUnit.SECONDS, SynchronousQueue(), { runnable ->
         Thread(runnable, "bbzq-media-proxy").apply { isDaemon = true }
-    }
+    })
+    private val activeSockets = ConcurrentHashMap.newKeySet<Socket>()
+    private val deadlines = ScheduledThreadPoolExecutor(1, { runnable ->
+        Thread(runnable, "bbzq-media-deadline").apply { isDaemon = true }
+    }).apply { removeOnCancelPolicy = true }
 
     @Volatile
     private var serverSocket: ServerSocket? = null
@@ -108,7 +116,10 @@ object MediaProxyServer {
         runCatching { serverSocket?.close() }
         serverSocket = null
         boundPort = -1
+        activeSockets.forEach { runCatching { it.close() } }
+        activeSockets.clear()
         MediaPrefetchCache.clear()
+        MediaSourcePerformance.clear()
         synchronized(knownTotals) { knownTotals.clear() }
     }
 
@@ -122,33 +133,41 @@ object MediaProxyServer {
     }
 
     private fun acceptLoop(socket: ServerSocket) {
-        while (running.get()) {
-            val client = try {
-                socket.accept()
-            } catch (t: Throwable) {
-                break
+        while (serverSocket === socket && running.get()) {
+            val client = try { socket.accept() } catch (_: IOException) { break }
+            val accepted = synchronized(this) {
+                if (serverSocket !== socket || !running.get()) false else {
+                    activeSockets += client
+                    true
+                }
             }
-            runCatching { client.soTimeout = SOCKET_TIMEOUT_MS }
-            runCatching { workers.execute { handleConnection(client) } }
-                .onFailure { runCatching { client.close() } }
+            if (!accepted) { runCatching { client.close() }; continue }
+            runCatching {
+                client.soTimeout = SOCKET_TIMEOUT_MS
+                workers.execute { handleConnection(client, socket) }
+            }.onFailure {
+                activeSockets -= client
+                runCatching { client.close() }
+            }
         }
     }
 
-    /** 一条连接上可能有多条请求（keep-alive），逐条处理到对端关闭或要求断开为止。 */
-    private fun handleConnection(client: Socket) {
+    /** 本地 HTTP 每次只服务一块并关闭连接；CDN 上游仍由 OkHttp 复用连接。 */
+    private fun handleConnection(client: Socket, listener: ServerSocket) {
+        val deadline = deadlines.schedule({ runCatching { client.close() } }, RESPONSE_TIMEOUT_SECONDS, TimeUnit.SECONDS)
         try {
             BufferedInputStream(client.getInputStream()).use { input ->
                 BufferedOutputStream(client.getOutputStream()).use { output ->
-                    while (running.get()) {
-                        val request = readRequest(input) ?: break
-                        if (!serve(request, output)) break
-                        output.flush()
-                    }
+                    val request = readRequest(input) ?: return
+                    serve(request, output, listener)
+                    output.flush()
                 }
             }
-        } catch (t: Throwable) {
-            // 播放器主动断开是常态，不值得记日志
+        } catch (_: Exception) {
+            // 切视频/拖动进度时断开连接是正常事件。
         } finally {
+            deadline.cancel(false)
+            activeSockets -= client
             runCatching { client.close() }
         }
     }
@@ -166,8 +185,11 @@ object MediaProxyServer {
         val parts = requestLine.split(' ')
         if (parts.size < 2) return null
         var range: String? = null
+        var headerBytes = requestLine.length
         while (true) {
             val line = readLine(input) ?: return null
+            headerBytes += line.length + 2
+            if (headerBytes > MAX_HEADER_LENGTH) throw IOException("request headers too long")
             if (line.isEmpty()) break
             val colon = line.indexOf(':')
             if (colon <= 0) continue
@@ -194,83 +216,73 @@ object MediaProxyServer {
         }
     }
 
-    /** @return 是否继续处理这条连接上的下一条请求 */
-    private fun serve(request: Request, output: BufferedOutputStream): Boolean {
+    private fun serve(request: Request, output: BufferedOutputStream, listener: ServerSocket) {
         if (request.method != "GET") {
             writeStatus(output, 405, "Method Not Allowed")
-            return false
+            return
         }
         val originalUrl = MediaProxyProtocol.originalUrlOf(request.path, request.query)
         if (originalUrl == null) {
             writeStatus(output, 404, "Not Found")
-            return false
+            return
         }
-        return try {
-            serveRange(originalUrl, request.range, output)
-            true
-        } catch (t: Throwable) {
-            // 降级：让播放器直接去原始地址取，不要因为代理出问题而没有画面
+        // 无 Range 的完整 GET、后缀/多段或不支持的格式交回原站，不能伪装为从零开始的 206。
+        val range = MediaProxyProtocol.parseRange(request.range)
+        if (range == null) {
             writeRedirect(output, originalUrl)
-            false
+            return
+        }
+        var committed = false
+        try {
+            val total = rememberTotal(originalUrl, null)
+            if (total != null && range.start >= total) {
+                committed = true
+                writeHead(output, 416, "Range Not Satisfiable", listOf(
+                    "Content-Range" to "bytes */$total", "Content-Length" to "0", "Connection" to "close"))
+                return
+            }
+            serveRange(originalUrl, MediaProxyProtocol.resolve(range, total), total, output, listener) { committed = true }
+        } catch (_: Exception) {
+            // 响应头一旦开始发出，只能关闭连接；在媒体正文里追加 302 会污染解码输入。
+            if (!committed) writeRedirect(output, originalUrl)
         }
     }
 
-    private fun serveRange(originalUrl: String, rangeHeader: String?, output: BufferedOutputStream) {
+    private fun serveRange(
+        originalUrl: String, requested: MediaProxyProtocol.Range, knownTotal: Long?,
+        output: BufferedOutputStream, listener: ServerSocket, commit: () -> Unit,
+    ) {
         val sources = candidatesFor(originalUrl)
-        if (sources.isEmpty()) throw IOException("no candidate for $originalUrl")
-
-        val knownTotal = rememberTotal(originalUrl, null)
-        val requested = MediaProxyProtocol.resolve(MediaProxyProtocol.parseRange(rangeHeader), knownTotal)
-        val requestedEnd = requested.end ?: return
-
-        // 预读命中就直接给，省掉整个往返
-        val cached = MediaPrefetchCache.get(originalUrl, requested.start, requestedEnd)
-        if (cached != null) {
-            val (bytes, cachedTotal) = cached
-            val total = cachedTotal ?: knownTotal
-            if (cachedTotal != null) rememberTotal(originalUrl, cachedTotal)
-            writePartial(output, bytes, requested.start, total)
-            prefetchNextChunk(sources, originalUrl, requested.start + bytes.size, bytes.size.toLong(), total)
-            return
+        if (sources.isEmpty()) throw IOException("no media candidate")
+        val lease = synchronized(this) {
+            if (serverSocket !== listener || !running.get()) throw IOException("media proxy stopped")
+            MediaPrefetchCache.acquire(sources, originalUrl, requested, knownTotal)
         }
-
-        if (knownTotal == null) {
-            // 还不知道文件多长，先整块取回顺便学到总长度。每个视频只有第一次会走这里：
-            // 此时 Content-Length 无从预先确定，边到边发就没法如实回报响应头。
-            val (bytes, meta) = MediaRangeFetcher.fetch(sources, requested, null)
-            meta.total?.let { rememberTotal(originalUrl, it) }
-            writePartial(output, bytes, requested.start, meta.total)
-            prefetchNextChunk(sources, originalUrl, requested.start + bytes.size, bytes.size.toLong(), meta.total)
-            return
+        val meta = lease.use { lease ->
+            lease.stream(onReady = { meta ->
+                synchronized(this) {
+                    if (serverSocket !== listener || !running.get()) throw IOException("media proxy stopped")
+                    rememberTotal(originalUrl, meta.total)
+                }
+                commit()
+                writePartialHead(output, meta.start, meta.length, meta.total ?: knownTotal, meta.contentType)
+            }) { bytes, offset, length ->
+                output.write(bytes, offset, length)
+                // 首批/尾批小于缓冲区时也立即交给播放器。
+                output.flush()
+            }
         }
-
-        // 总长度已知：流式下发，第一片到手就写响应头，之后边到边写
-        var served = 0L
-        MediaRangeFetcher.stream(
-            sources,
-            requested,
-            knownTotal,
-            onReady = { meta ->
-                meta.total?.let { rememberTotal(originalUrl, it) }
-                writePartialHead(
-                    output = output,
-                    start = requested.start,
-                    length = requestedEnd - requested.start + 1,
-                    total = meta.total ?: knownTotal,
-                    contentType = meta.contentType,
-                )
-            },
-        ) { bytes ->
-            output.write(bytes)
-            served += bytes.size
+        synchronized(this) {
+            if (serverSocket === listener && running.get() && meta.end < Long.MAX_VALUE) {
+                prefetchNextChunk(sources, originalUrl, meta.end + 1, meta.length, meta.total ?: knownTotal)
+            }
         }
-        prefetchNextChunk(sources, originalUrl, requested.start + served, served, knownTotal)
     }
 
     /**
      * 把下一块提前取回来。
      *
-     * 播放器按顺序读，当前块读完必然来要下一块；提前取好，块边界那次请求就零等待。
+     * 顺序播放时尝试提前取下一块；前台请求可接管尚未完成的预读，减少边界等待。
      */
     private fun prefetchNextChunk(
         sources: List<String>,
@@ -279,7 +291,8 @@ object MediaProxyServer {
         chunkLength: Long,
         total: Long?,
     ) {
-        if (chunkLength <= 0L) return
+        // 16 字节等索引探测不应触发同样细碎的后台请求。
+        if (chunkLength < 256L * 1024) return
         if (total != null) {
             if (nextStart > total - 1) return
             MediaPrefetchCache.prefetch(sources, originalUrl, nextStart, minOf(chunkLength, total - nextStart), total)
@@ -294,6 +307,7 @@ object MediaProxyServer {
         val isCellular = hostContext?.let { context ->
             runCatching { NetworkTypeDetector.isCellular(context) }.getOrDefault(false)
         } ?: false
+        MediaSourcePerformance.updateScope(isCellular)
         val hosts = runCatching { ModuleSettings.getActiveCdnHosts(prefs, isCellular) }.getOrDefault(emptyList())
         return DownloadSourcePlan.plan(originalUrl, hosts).map { it.url }
     }
@@ -305,11 +319,6 @@ object MediaProxyServer {
         } else {
             knownTotals[originalUrl]
         }
-    }
-
-    private fun writePartial(output: BufferedOutputStream, body: ByteArray, start: Long, total: Long?) {
-        writePartialHead(output, start, body.size.toLong(), total, null)
-        output.write(body)
     }
 
     private fun writePartialHead(
@@ -329,7 +338,7 @@ object MediaProxyServer {
                 "Content-Length" to length.toString(),
                 "Content-Range" to MediaProxyProtocol.contentRange(MediaProxyProtocol.Range(start, end), total),
                 "Accept-Ranges" to "bytes",
-                "Connection" to "keep-alive",
+                "Connection" to "close",
             ),
         )
     }
