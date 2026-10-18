@@ -173,7 +173,11 @@ class VideoCommentHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun hookSearchUrls(symbols: RestoredVideoCommentSymbols): Int {
-        val method = symbols.searchUrlsMethod ?: return 0
+        val owner = symbols.searchUrlsMethod?.declaringClass ?: return 0
+        // Old symbol caches point to internalGetUrls(), whose return type is MapFieldLite.
+        // Filter the public Map view so protobuf internals always retain their concrete type.
+        val method = runCatching { owner.getDeclaredMethod("getUrlsMap") }.getOrNull()
+            ?.takeIf { !Modifier.isStatic(it.modifiers) && it.returnType == Map::class.java } ?: return 0
 
         env.hookAfter(method) { param ->
             runCatching {
@@ -184,7 +188,7 @@ class VideoCommentHook(env: RoamingEnv) : BaseRoamingHook(env) {
                     val schema = value?.let { noArgMethod(it.javaClass, "getAppUrlSchema")?.invoke(it) as? String }
                     schema == null || !isSearchUrl(schema)
                 }
-                if (kept.size != urls.size) param.result = kept
+                if (kept.size != urls.size) param.result = Collections.unmodifiableMap(kept)
             }.onFailure {
                 log("VideoComment search url hook failed", it)
             }

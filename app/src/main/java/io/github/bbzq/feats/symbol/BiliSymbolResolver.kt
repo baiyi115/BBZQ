@@ -3014,7 +3014,12 @@ object BiliSymbolResolver {
         val searchUrlsMethod = COMMENT_CONTENT_CLASSES
             .asSequence()
             .mapNotNull { classLoader.loadClassOrNull(it) }
-            .mapNotNull { it.allMethods().firstOrNull { method -> method.name == "internalGetUrls" && method.parameterCount == 0 } }
+            .mapNotNull { type ->
+                type.allMethods().firstOrNull { method ->
+                    method.name == "getUrlsMap" && method.parameterCount == 0 &&
+                        !Modifier.isStatic(method.modifiers) && method.returnType == Map::class.java
+                }
+            }
             .firstOrNull()
 
         val emptyPageHooks = scanVideoCommentEmptyPageHooks(classLoader)
