@@ -141,31 +141,32 @@ fun safeCoerceResult(executable: Executable, value: Any?): Any? {
 
 fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
     runCatching {
-        executable.isAccessible = true
-        val coercer = resolveResultCoercer(executable)
-        xposed.hook(executable)
-            .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
-            .intercept { chain ->
-                val param = MethodHookParam(
-                    chain = chain,
-                    executable = executable,
-                    thisObject = chain.getThisObject(),
-                    args = HookArgsList(chain.getArgs()),
-                )
-                runCatching {
-                    hooker(param)
-                }.onFailure { throwable ->
-                    log("Hook before failed at ${executable.declaringClass.name}.${executable.name}", throwable)
+        hookRegistrations.install(executable, "hookBefore", hooker, hookRegistrationSite()) {
+            executable.isAccessible = true
+            val coercer = resolveResultCoercer(executable)
+            xposed.hook(executable)
+                .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
+                .intercept { chain ->
+                    val param = MethodHookParam(
+                        chain = chain,
+                        executable = executable,
+                        thisObject = chain.getThisObject(),
+                        args = HookArgsList(chain.getArgs()),
+                    )
+                    runCatching {
+                        hooker(param)
+                    }.onFailure { throwable ->
+                        log("Hook before failed at ${executable.declaringClass.name}.${executable.name}", throwable)
+                    }
+                    if (param.shouldReturnEarly()) {
+                        coercer(param.result)
+                    } else if (param.isArgsModified) {
+                        chain.proceed(param.argsArray)
+                    } else {
+                        chain.proceed()
+                    }
                 }
-                if (param.shouldReturnEarly()) {
-                    coercer(param.result)
-                } else if (param.isArgsModified) {
-                    chain.proceed(param.argsArray)
-                } else {
-                    chain.proceed()
-                }
-            }
-        true
+        }
     }.getOrElse { throwable ->
         log("Failed to register hookBefore at ${executable.declaringClass.name}.${executable.name}", throwable)
         false
@@ -173,26 +174,28 @@ fun RoamingEnv.hookBefore(executable: Executable, hooker: Hooker): Boolean =
 
 fun RoamingEnv.hookAfter(executable: Executable, hooker: Hooker) {
     runCatching {
-        executable.isAccessible = true
-        val coercer = resolveResultCoercer(executable)
-        xposed.hook(executable)
-            .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
-            .intercept { chain ->
-                val param = MethodHookParam(
-                    chain = chain,
-                    executable = executable,
-                    thisObject = chain.getThisObject(),
-                    args = HookArgsList(chain.getArgs()),
-                )
-                val initial = chain.proceed()
-                param.setInitialResult(initial)
-                runCatching {
-                    hooker(param)
-                }.onFailure { throwable ->
-                    log("Hook after failed at ${executable.declaringClass.name}.${executable.name}", throwable)
+        hookRegistrations.install(executable, "hookAfter", hooker, hookRegistrationSite()) {
+            executable.isAccessible = true
+            val coercer = resolveResultCoercer(executable)
+            xposed.hook(executable)
+                .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
+                .intercept { chain ->
+                    val param = MethodHookParam(
+                        chain = chain,
+                        executable = executable,
+                        thisObject = chain.getThisObject(),
+                        args = HookArgsList(chain.getArgs()),
+                    )
+                    val initial = chain.proceed()
+                    param.setInitialResult(initial)
+                    runCatching {
+                        hooker(param)
+                    }.onFailure { throwable ->
+                        log("Hook after failed at ${executable.declaringClass.name}.${executable.name}", throwable)
+                    }
+                    coercer(param.result)
                 }
-                coercer(param.result)
-            }
+        }
     }.onFailure { throwable ->
         log("Failed to register hookAfter at ${executable.declaringClass.name}.${executable.name}", throwable)
     }
@@ -200,25 +203,27 @@ fun RoamingEnv.hookAfter(executable: Executable, hooker: Hooker) {
 
 fun RoamingEnv.replace(executable: Executable, replacer: Replacer) {
     runCatching {
-        executable.isAccessible = true
-        val coercer = resolveResultCoercer(executable)
-        xposed.hook(executable)
-            .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
-            .intercept { chain ->
-                val param = MethodHookParam(
-                    chain = chain,
-                    executable = executable,
-                    thisObject = chain.getThisObject(),
-                    args = HookArgsList(chain.getArgs()),
-                )
-                val computed = runCatching {
-                    replacer(param)
-                }.getOrElse { throwable ->
-                    log("Hook replace failed at ${executable.declaringClass.name}.${executable.name}, invoking original", throwable)
-                    return@intercept if (param.isArgsModified) chain.proceed(param.argsArray) else chain.proceed()
+        hookRegistrations.install(executable, "replace", replacer, hookRegistrationSite()) {
+            executable.isAccessible = true
+            val coercer = resolveResultCoercer(executable)
+            xposed.hook(executable)
+                .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
+                .intercept { chain ->
+                    val param = MethodHookParam(
+                        chain = chain,
+                        executable = executable,
+                        thisObject = chain.getThisObject(),
+                        args = HookArgsList(chain.getArgs()),
+                    )
+                    val computed = runCatching {
+                        replacer(param)
+                    }.getOrElse { throwable ->
+                        log("Hook replace failed at ${executable.declaringClass.name}.${executable.name}, invoking original", throwable)
+                        return@intercept if (param.isArgsModified) chain.proceed(param.argsArray) else chain.proceed()
+                    }
+                    coercer(computed)
                 }
-                coercer(computed)
-            }
+        }
     }.onFailure { throwable ->
         log("Failed to register replace at ${executable.declaringClass.name}.${executable.name}", throwable)
     }
@@ -226,19 +231,21 @@ fun RoamingEnv.replace(executable: Executable, replacer: Replacer) {
 
 fun RoamingEnv.intercept(executable: Executable, block: (XposedInterface.Chain) -> Any?) {
     runCatching {
-        executable.isAccessible = true
-        val coercer = resolveResultCoercer(executable)
-        xposed.hook(executable)
-            .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
-            .intercept { chain ->
-                val res = runCatching {
-                    block(chain)
-                }.getOrElse { throwable ->
-                    log("Hook intercept failed at ${executable.declaringClass.name}.${executable.name}", throwable)
-                    chain.proceed()
+        hookRegistrations.install(executable, "intercept", block, hookRegistrationSite()) {
+            executable.isAccessible = true
+            val coercer = resolveResultCoercer(executable)
+            xposed.hook(executable)
+                .setExceptionMode(XposedInterface.ExceptionMode.PASSTHROUGH)
+                .intercept { chain ->
+                    val res = runCatching {
+                        block(chain)
+                    }.getOrElse { throwable ->
+                        log("Hook intercept failed at ${executable.declaringClass.name}.${executable.name}", throwable)
+                        chain.proceed()
+                    }
+                    coercer(res)
                 }
-                coercer(res)
-            }
+        }
     }.onFailure { throwable ->
         log("Failed to register intercept at ${executable.declaringClass.name}.${executable.name}", throwable)
     }
@@ -335,3 +342,10 @@ private fun Class<*>.findMethodOrNull(name: String, vararg parameterTypes: Class
     }
 }
 
+
+/** 安装期记录调用位置，避免 R8 合并 lambda 类后误把两个独立拦截器当成一个。 */
+private fun hookRegistrationSite(): StackTraceElement =
+    Throwable().stackTrace.let { trace ->
+        val helperClass = trace.first().className
+        trace.first { it.className != helperClass }
+    }

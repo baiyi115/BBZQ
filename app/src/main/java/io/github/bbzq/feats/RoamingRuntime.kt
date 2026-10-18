@@ -109,7 +109,7 @@ object RoamingRuntime {
                 )
             }
             val woMicHook = WoMicHook(env)
-            runCatching { woMicHook.startHook() }
+            runCatching { woMicHook.install() }
                 .onFailure { env.log("WoMicHook failed", it) }
             env.log("BBZQ runtime installed WoMic hook(s)")
             return
@@ -127,7 +127,7 @@ object RoamingRuntime {
                 )
             }
             val readEraHook = ReadEraHook(env)
-            runCatching { readEraHook.startHook() }
+            runCatching { readEraHook.install() }
                 .onFailure { env.log("ReadEraHook failed", it) }
             env.log("BBZQ runtime installed ReadEra hook(s)")
             return
@@ -247,7 +247,7 @@ object RoamingRuntime {
 
         val activeHooks = hooks.map { it(env) }
         activeHooks.forEach { hook ->
-            runCatching { hook.startHook() }
+            runCatching { hook.install() }
                 .onFailure { env.log("Hook failed: ${hook.javaClass.simpleName}", it) }
         }
 
@@ -255,7 +255,7 @@ object RoamingRuntime {
             env.symbols = updatedSymbols
             activeHooks.filter { !it.isInstalled }.forEach { hook ->
                 runCatching {
-                    hook.startHook()
+                    hook.install()
                     if (hook.isInstalled) {
                         env.log("Deferred hook installed: ${hook.javaClass.simpleName}")
                     }
@@ -302,6 +302,8 @@ class RoamingEnv(
     val classLoader: ClassLoader,
     private val logger: (String, Throwable?) -> Unit,
 ) {
+    internal val hookRegistrations = HookRegistrationRegistry()
+
     var symbols: BiliHookSymbols? = null
         internal set
 
@@ -362,6 +364,8 @@ abstract class BaseRoamingHook(
     }
 
     var isInstalled: Boolean = false
+
+    internal fun install() = env.hookRegistrations.withOwner(javaClass) { startHook() }
 
     abstract fun startHook()
 }

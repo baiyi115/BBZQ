@@ -73,3 +73,12 @@
 -dontwarn rikka.shizuku.**
 -dontwarn rikka.sui.**
 -dontwarn moe.shizuku.**
+
+# 安装去重用注册调用位置区分独立 Hook；保留栈采集边界，允许其名称混淆。
+-keepclassmembers,allowobfuscation class io.github.bbzq.feats.Api102HookKt {
+    private static java.lang.StackTraceElement hookRegistrationSite();
+    public static *** hookBefore(...);
+    public static *** hookAfter(...);
+    public static *** replace(...);
+    public static *** intercept(...);
+}

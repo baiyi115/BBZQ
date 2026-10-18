@@ -61,10 +61,9 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                     if (tv.id == android.view.View.NO_ID) return@hookBefore
 
                     val text = param.args[0] as? CharSequence ?: return@hookBefore
-                    val textStr = text.toString()
                     // 绝大多数 set 目标是普通文本；短文本不可能是带简介的详情页描述，
-                    // 提前返回同时避免对高频小文本做 toString 之外的工作。
-                    if (textStr.length < MIN_DESC_TEXT_LENGTH) return@hookBefore
+                    // 提前返回同时避免对高频小文本分配字符串或继续查找视图。
+                    if (text.length < MIN_DESC_TEXT_LENGTH) return@hookBefore
 
                     val ctx = tv.context ?: return@hookBefore
                     var activity: android.app.Activity? = null
@@ -81,6 +80,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                     val resName = runCatching { tv.resources.getResourceEntryName(tv.id) }.getOrNull()?.lowercase() ?: return@hookBefore
                     if (!isTargetDescResName(resName)) return@hookBefore
 
+                    val textStr = text.toString()
                     if (textStr.isNotBlank() && !textStr.contains("下载视频")) {
                         tv.isFocusable = true
                         tv.isClickable = true
@@ -132,7 +132,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             }.onFailure { log("Failed to hook TextView.setText for download link", it) }
         }
 
-        if (!trialQualityEnabled && !highestBitrateEnabled) {
+        if (!trialQualityEnabled && !highestBitrateEnabled && !preferHardwareDecoder) {
             log("startHook: PlayView quality pipeline disabled (video download hook active)")
             return
         }
@@ -201,20 +201,24 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         return count
     }
 
-    private fun hookHandlerClass(handlerClass: Class<*>): Boolean {
-        if (!hookedHandlerClasses.add(handlerClass)) return true
-        var hooked = false
-        handlerClass.allMethods().filter { it.name == "onNext" && it.parameterCount == 1 }.forEach { onNextMethod ->
-            env.hookBefore(onNextMethod) { p ->
+    private fun hookHandlerClass(handlerClass: Class<*>): Boolean = synchronized(hookedHandlerClasses) {
+        if (handlerClass in hookedHandlerClasses) return@synchronized true
+        val methods = handlerClass.allMethods().filter { it.name == "onNext" && it.parameterCount == 1 }.toList()
+        if (methods.isEmpty()) return@synchronized false
+        var complete = true
+        methods.forEach { onNextMethod ->
+            val installed = env.hookBefore(onNextMethod) { p ->
                 runCatching {
                     processPlayViewResponse(p.args.firstOrNull())
                 }.onFailure {
                     log("TryFreeQuality handler onNext hook failed", it)
                 }
             }
-            hooked = true
+            complete = installed && complete
         }
-        return hooked
+        // 注册失败可在下一次响应重试；成功的方法由中央注册表去重。
+        if (complete) hookedHandlerClasses.add(handlerClass)
+        complete
     }
 
     private fun hookUiMethods(symbols: io.github.bbzq.feats.symbol.RestoredTryFreeQualitySymbols): Int {
