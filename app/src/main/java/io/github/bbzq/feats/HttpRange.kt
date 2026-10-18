@@ -82,6 +82,7 @@ internal object HttpRange {
         budget: RangeRequestBudget? = null,
         ifRange: String? = null,
         firstByteTimeoutMs: Long = 0,
+        deferHeadersUntilBody: Boolean = false,
         write: (buffer: ByteArray, offset: Int, length: Int) -> Unit,
     ): Response {
         if (start < 0 || end < start || end - start >= Int.MAX_VALUE) throw IOException("invalid range: $start-$end")
@@ -125,8 +126,9 @@ internal object HttpRange {
                 val meta = Response(parsed.start, parsed.end, parsed.total, response.header("Content-Type"), tag)
                 budget?.remainingNanos()
                 // 多源预算下先确认正文到达，再提交下游头，空响应仍可安全回退。
-                if (firstByteTimeoutMs <= 0) onHeaders(meta)
-                var headersPending = firstByteTimeoutMs > 0
+                val waitForBody = deferHeadersUntilBody || firstByteTimeoutMs > 0
+                if (!waitForBody) onHeaders(meta)
+                var headersPending = waitForBody
                 val buffer = ByteArray(READ_BUFFER_BYTES)
                 var remaining = expected
                 body.byteStream().use { input ->
@@ -136,7 +138,9 @@ internal object HttpRange {
                         if (read == -1) throw IOException("short body: ${expected - remaining}/$expected")
                         if (read == 0) continue
                         if (headersPending) {
-                            if (!waiting.compareAndSet(true, false)) throw SocketTimeoutException("media first byte deadline exceeded")
+                            if (firstByteTimeoutMs > 0 && !waiting.compareAndSet(true, false)) {
+                                throw SocketTimeoutException("media first byte deadline exceeded")
+                            }
                             startup?.cancel(false)
                             budget?.remainingNanos()
                             onHeaders(meta)

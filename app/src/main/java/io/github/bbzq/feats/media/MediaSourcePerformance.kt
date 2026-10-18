@@ -33,35 +33,61 @@ internal class RecentMediaSourcePerformance(private val clock: () -> Long = Syst
         }
     }
 
-    @Synchronized fun rank(urls: List<String>, firstByte: Boolean): List<String> {
-        if (urls.size < 2) return urls
+    /** 按整个区间的预计完成时间选源，不能只看首字节或把未知源当成快源。 */
+    @Synchronized fun rankForRange(urls: List<String>, bytes: Long, speculative: Boolean): List<String> {
         val now = clock()
-        val measured = urls.map { url -> key(url)?.let { samples[it] }?.takeIf { now - it.at < MAX_AGE } }
-        val best = if (firstByte) measured.mapNotNull { it?.firstByteNanos }.minOrNull()
-            else measured.mapNotNull { it?.bytesPerNano }.maxOrNull()
-        if (best == null) return urls
-        // 未测节点留在已知慢节点前面，仍有机会通过实际分片获得样本。
-        val unknown = if (firstByte) best * 1.2 else best / 1.2
-        return urls.indices.sortedBy { index ->
-            val value = if (firstByte) measured[index]?.firstByteNanos else measured[index]?.bytesPerNano
-            if (firstByte) value ?: unknown else -(value ?: unknown)
-        }.map(urls::get)
+        val estimates = urls.map { url -> url to sample(url, now)?.eta(bytes) }
+        val ranked = estimates.sortedBy { it.second ?: Double.POSITIVE_INFINITY }.map { it.first }
+        val best = estimates.mapNotNull { it.second }.minOrNull()
+        // 慢线路的下一块预读兼作学习：仍读取实际播放数据，不另发测速请求。
+        // 当前播放不为未知节点让路，已足够快的线路也不必付出探索成本。
+        if (speculative && best != null && best >= TimeUnit.SECONDS.toNanos(1)) {
+            val unknown = estimates.firstOrNull { it.second == null }?.first
+            if (unknown != null) return listOf(unknown) + ranked.filter { it != unknown }
+        }
+        return ranked
     }
 
-    /** 明显慢于最快节点的已测源只保留作故障回退，避免它固定承担中间片拖住顺序输出。 */
-    @Synchronized fun transferCandidates(urls: List<String>): List<String> {
-        val ranked = rank(urls, firstByte = false)
+    /** 前台尾片只交给预计耗时接近的已测源，避免未知慢节点堵住顺序供流。 */
+    @Synchronized fun transferCandidates(urls: List<String>, bytes: Long): List<String> {
         val now = clock()
-        val rates = ranked.map { url -> key(url)?.let { samples[it] }?.takeIf { now - it.at < MAX_AGE }?.bytesPerNano }
-        val best = rates.filterNotNull().maxOrNull() ?: return ranked
-        return ranked.filterIndexed { index, _ -> rates[index]?.let { it >= best * 0.5 } ?: true }
+        val measured = urls.mapNotNull { url -> sample(url, now)?.let { url to it.eta(bytes) } }
+            .sortedBy { it.second }
+        val best = measured.firstOrNull()?.second ?: return urls.take(1)
+        return measured.filter { it.second <= best * 1.25 }.map { it.first }
     }
+
+    /** 好线路上一块很快就能传完时，避免为拆分再付一次首字节和线程调度开销。 */
+    @Synchronized fun shouldParallel(urls: List<String>, bytes: Long): Boolean {
+        val now = clock()
+        val best = urls.mapNotNull { sample(it, now) }.minByOrNull { it.eta(bytes) } ?: return false
+        return urls.size > 1 && best.eta(bytes) >= TimeUnit.MILLISECONDS.toNanos(400) &&
+            bytes >= (2 * best.bytesPerNano * best.firstByteNanos).coerceIn(1024.0 * 1024, 4.0 * 1024 * 1024)
+    }
+
+    @Synchronized fun hedgeDelayMs(url: String): Long =
+        sample(url, clock())?.let { (it.firstByteNanos * 2 / 1_000_000).toLong().coerceIn(250, 1000) } ?: 350
+
+    @Synchronized fun stallTimeoutMs(url: String): Long =
+        sample(url, clock())?.let { (it.firstByteNanos * 4 / 1_000_000).toLong().coerceIn(1500, 3000) } ?: 2000
+
+    /** 只有另一条线路已经实测可用，才用它的保守速率判断持续慢传。 */
+    @Synchronized fun rescueRate(url: String, alternatives: List<String>): Double =
+        alternatives.filter { key(it) != key(url) }.mapNotNull { sample(it, clock())?.bytesPerNano }
+            .maxOrNull()?.times(0.35) ?: 0.0
+
+    private fun sample(url: String, now: Long): Sample? =
+        key(url)?.let { samples[it] }?.takeIf { now - it.at < MAX_AGE }
+
+    private fun Sample.eta(bytes: Long): Double = firstByteNanos + bytes / bytesPerNano
 
     private fun key(url: String): String? = runCatching {
         URI(url).rawAuthority?.lowercase(Locale.ROOT)
     }.getOrNull()
 
-    companion object { private val MAX_AGE = TimeUnit.SECONDS.toNanos(30) }
+    companion object {
+        private val MAX_AGE = TimeUnit.SECONDS.toNanos(30)
+    }
 }
 
 internal val MediaSourcePerformance = RecentMediaSourcePerformance()

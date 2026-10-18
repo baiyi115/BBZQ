@@ -7,14 +7,14 @@ import io.github.bbzq.feats.download.PiecePlanning
 import io.github.bbzq.feats.hook.CustomCdnProcessor
 import okhttp3.OkHttpClient
 import java.io.IOException
-import java.util.concurrent.ArrayBlockingQueue
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Future
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.SynchronousQueue
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
 
-/** 小首段直接流出，尾片有界并行、按序渐进交付；排队和回源共用块预算。 */
+/** 流式供流；值得拆分时才启用小首段和有界尾片，全部回源共用块预算。 */
 object MediaRangeFetcher {
     private val client: OkHttpClient by lazy {
         OkHttpClient.Builder()
@@ -23,7 +23,7 @@ object MediaRangeFetcher {
             .build()
     }
     private val pool by lazy {
-        ThreadPoolExecutor(4, 4, 0, TimeUnit.SECONDS, ArrayBlockingQueue(8), { runnable ->
+        ThreadPoolExecutor(0, 4, 30, TimeUnit.SECONDS, SynchronousQueue(), { runnable ->
             Thread(runnable, "bbzq-media-piece").apply { isDaemon = true }
         })
     }
@@ -36,22 +36,25 @@ object MediaRangeFetcher {
 
     private class Tail(val piece: PiecePlanning.Piece, val buffer: MediaPieceBuffer, var future: Future<*>? = null)
     private class Representation(val total: Long?, val entityTag: String?)
+    private class RepresentationMismatch(message: String) : IOException(message)
 
     internal fun stream(
         sources: List<String>, range: MediaProxyProtocol.Range, knownTotal: Long?,
         budget: RangeRequestBudget, onReady: (Meta) -> Unit, sink: (ByteArray, Int, Int) -> Unit,
     ) {
-        val epoch = MediaSourcePerformance.epoch()
-        val distinct = MediaSourcePerformance.rank(sources.distinct(), firstByte = true)
-        if (distinct.isEmpty()) throw IOException("no media source available")
         val end = range.end ?: throw IOException("unresolved media range")
         val length = MediaProxyProtocol.length(range)
+        val epoch = MediaSourcePerformance.epoch()
+        val distinct = sources.distinct()
+        if (distinct.isEmpty()) throw IOException("no media source available")
         if (range.start < 0 || length !in 1..MediaProxyProtocol.CHUNK_BYTES) throw IOException("invalid media range")
         // 冷却节点只作回退，不能因轮转分片又把它提升成某片的首选。
         val ready = distinct.filterNot { DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it)) }
-        val primaries = ready.ifEmpty { distinct.take(1) }
-        var tailPrimaries = primaries
-        val canParallel = !budget.isSpeculative && primaries.size > 1 && length >= 2 * PiecePlanning.MIN_PROXY_PIECE_BYTES
+        val ranked = MediaSourcePerformance.rankForRange(ready.ifEmpty { distinct }, length, budget.isSpeculative)
+        val primaries = if (ready.isEmpty()) ranked.take(1) else ranked
+        var tailPrimaries = MediaSourcePerformance.transferCandidates(primaries, length / 2)
+        val canParallel = !budget.isSpeculative && length >= 2 * PiecePlanning.MIN_PROXY_PIECE_BYTES &&
+            MediaSourcePerformance.shouldParallel(tailPrimaries, length)
         val leadEnd = if (canParallel) range.start + LEAD_BYTES - 1 else end
         val failedSources = ConcurrentHashMap.newKeySet<String>()
         val tails = ArrayList<Tail>(3)
@@ -63,18 +66,20 @@ object MediaRangeFetcher {
                 val tailReady = primaries.filterNot {
                     it in failedSources || DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it))
                 }
-                tailPrimaries = MediaSourcePerformance.transferCandidates(tailReady.ifEmpty { primaries })
-                // 首段学到总长后，冷起播也可以并行；总长仍未知时只承诺已经验证的首段。
-                val outputEnd = if (canParallel && total != null) minOf(end, total - 1) else response.end
+                tailPrimaries = MediaSourcePerformance.transferCandidates(tailReady.ifEmpty { primaries }, (length - LEAD_BYTES) / 2)
+                // 总长和强 ETag 均确认后才跨源拆片，避免拼接同长度的不同表示。
+                val outputEnd = if (canParallel && total != null && response.strongEntityTag != null) minOf(end, total - 1) else response.end
                 onReady(Meta(range.start, outputEnd, total, response.contentType))
                 if (response.end < outputEnd) {
                     val start = response.end + 1
                     val remaining = outputEnd - response.end
                     val pieces = PiecePlanning.plan(start, remaining, tailPrimaries.size, tailPolicy)
                         ?: listOf(PiecePlanning.Piece(0, start, outputEnd))
-                    pieces.forEach { piece ->
+                    pieces.forEachIndexed { index, piece ->
                         val tail = Tail(piece, MediaPieceBuffer(budget))
                         tails += tail
+                        // 当前马上要消费的片留在加载线程；远端片才用后台槽，避免关键片排队。
+                        if (index == 0) return@forEachIndexed
                         try {
                             tail.future = pool.submit {
                                 var error: Exception? = null
@@ -99,7 +104,6 @@ object MediaRangeFetcher {
         } finally {
             budget.cancel()
             tails.forEach { it.buffer.cancel(); it.future?.cancel(true) }
-            if (tails.isNotEmpty()) pool.purge()
         }
     }
 
@@ -137,45 +141,67 @@ object MediaRangeFetcher {
         var entityTag = representation?.entityTag
         var published = false
         var last: IOException? = null
-        for (source in ordered) {
+        val attempted = HashSet<String>()
+        val slowSources = HashSet<String>()
+        val slowFallbacks = LinkedHashSet<String>()
+        while (attempted.size < ordered.size || slowFallbacks.isNotEmpty()) {
             budget.remainingNanos()
+            val available = ordered.filter { it !in attempted }
+            val source = available.firstOrNull {
+                it !in failedSources && !DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it))
+            } ?: available.firstOrNull() ?: slowFallbacks.first().also { slowFallbacks.remove(it) }
+            val requestFailures = HashSet<String>()
+            // 冷却源仅在前面的候选都失败后顺序尝试，不额外抢占竞速槽。
+            val alternative = available.firstOrNull {
+                it != source && it !in failedSources && !DownloadHealth.isHostCoolingDown(CustomCdnProcessor.hostOf(it))
+            }
             var downstreamFailure = false
-            val started = System.nanoTime()
-            val before = delivered
-            var firstByte = 0L
-            var sinkNanos = 0L
             try {
-                HttpRange.read(client, source, piece.start + delivered, responseEnd, onHeaders = { meta ->
-                    if (expectedTotal != null && expectedTotal != meta.total) throw IOException("media size changed between pieces")
-                    if (entityTag != null && entityTag != meta.strongEntityTag) throw IOException("media entity changed between pieces")
-                    if ((knownTotal != null || published) && meta.end != responseEnd) throw IOException("unexpected clipped piece")
-                    if (!published) {
-                        expectedTotal = meta.total ?: knownTotal
-                        entityTag = meta.strongEntityTag ?: entityTag
-                        responseEnd = meta.end
-                        published = true
-                        try { onHeaders(meta) } catch (e: Exception) { downstreamFailure = true; throw e }
-                    }
-                }, budget = budget, ifRange = entityTag,
-                    firstByteTimeoutMs = if (ordered.size > 1) 2500 else 0) { buffer, from, size ->
-                    val now = System.nanoTime()
-                    if (firstByte == 0L) firstByte = now
-                    try { write(buffer, from, size) } catch (e: Exception) { downstreamFailure = true; throw e }
-                    finally { sinkNanos += System.nanoTime() - now }
-                    delivered += size
+                MediaRangeRequest.read(client, source, alternative, available,
+                    piece.start + delivered, responseEnd, entityTag, budget, epoch, slowSources,
+                    validate = { meta ->
+                        if (expectedTotal != null && expectedTotal != meta.total) throw RepresentationMismatch("media size changed between pieces")
+                        if (entityTag != null && entityTag != meta.strongEntityTag) throw RepresentationMismatch("media entity changed between pieces")
+                        if ((knownTotal != null || published) && meta.end != responseEnd) throw IOException("unexpected clipped piece")
+                    }, onHeaders = { meta ->
+                        if (!published) {
+                            expectedTotal = meta.total ?: knownTotal
+                            entityTag = meta.strongEntityTag ?: entityTag
+                            responseEnd = meta.end
+                            published = true
+                            try { onHeaders(meta) } catch (e: Exception) { downstreamFailure = true; throw e }
+                        }
+                    }, onFailure = { url, failure ->
+                        if (!downstreamFailure) {
+                            requestFailures += url
+                            if (failure is MediaRangeRequest.SlowSource) {
+                                // 历史速率仅作换源提示，不能把仍在供流的 CDN 判成故障。
+                                // 备源可能使用不同 ETag；全部不兼容时允许原源续传一次。
+                                if (slowSources.add(url)) slowFallbacks += url
+                            } else {
+                                slowFallbacks.remove(url)
+                                failedSources += url
+                                // 表示不兼容只对当前块无效，不代表整台 CDN 网络故障。
+                                if (failure !is RepresentationMismatch) {
+                                    DownloadHealth.recordHostFailure(CustomCdnProcessor.hostOf(url))
+                                }
+                            }
+                        }
+                    }) { bytes, offset, count ->
+                    try { write(bytes, offset, count) } catch (e: Exception) { downstreamFailure = true; throw e }
+                    delivered += count
                 }
-                MediaSourcePerformance.record(epoch, source, firstByte - started,
-                    System.nanoTime() - started - sinkNanos, delivered - before)
-                DownloadHealth.recordHostSuccess(CustomCdnProcessor.hostOf(source))
                 return
             } catch (e: IOException) {
                 budget.remainingNanos()
                 if (downstreamFailure) throw e
-                failedSources += source
-                DownloadHealth.recordHostFailure(CustomCdnProcessor.hostOf(source))
-                // 只有强 ETag 能验证续传是同一内容；从已交付位置继续，绝不重放前缀。
+                // 已开始交付的区间只能用强 ETag 续传，竞速也不能放松内容一致性检查。
                 if (published && (entityTag == null || expectedTotal == null)) throw e
                 if (delivered == responseEnd - piece.start + 1) return
+                val previousAttempts = attempted.size
+                attempted += requestFailures
+                // 被竞速取消的主源没有失败，仍可接替随后出错的胜出源。
+                if (attempted.size == previousAttempts) attempted += source
                 last = e
             }
         }
