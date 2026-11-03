@@ -17,7 +17,6 @@ import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ListView
 import android.widget.ProgressBar
-import android.widget.RadioGroup
 import android.widget.RadioButton
 import android.widget.TextView
 import android.widget.Toast
@@ -268,18 +267,30 @@ class CdnSpeedTestDialog(
             setPadding(0, dp(8), 0, 0)
         })
 
-        val radioGroup = RadioGroup(context)
         val rbParallel = RadioButton(context).apply {
             text = context.getString(R.string.cdn_speed_test_mode_parallel) + " (" + context.getString(R.string.cdn_speed_test_mode_parallel_hint) + ")"
-            isChecked = ModuleSettings.isCdnSpeedTestParallel(prefs)
         }
         val rbSequential = RadioButton(context).apply {
             text = context.getString(R.string.cdn_speed_test_mode_sequential) + " (" + context.getString(R.string.cdn_speed_test_mode_sequential_hint) + ")"
-            isChecked = !ModuleSettings.isCdnSpeedTestParallel(prefs)
         }
-        radioGroup.addView(rbParallel)
-        radioGroup.addView(rbSequential)
-        root.addView(radioGroup)
+
+        var isParallelSelected = ModuleSettings.isCdnSpeedTestParallel(prefs)
+        fun updateRadioSelection(parallel: Boolean) {
+            isParallelSelected = parallel
+            rbParallel.isChecked = parallel
+            rbSequential.isChecked = !parallel
+        }
+        updateRadioSelection(isParallelSelected)
+
+        rbParallel.setOnClickListener { updateRadioSelection(true) }
+        rbSequential.setOnClickListener { updateRadioSelection(false) }
+
+        val modeGroup = LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            addView(rbParallel)
+            addView(rbSequential)
+        }
+        root.addView(modeGroup)
 
         AlertDialog.Builder(context)
             .setTitle(R.string.cdn_speed_test_params_title)
@@ -288,7 +299,7 @@ class CdnSpeedTestDialog(
                 val size = sizeEdit.text.toString().toIntOrNull() ?: 16
                 val warmup = warmupEdit.text.toString().toIntOrNull() ?: 4
                 val cooldown = cooldownEdit.text.toString().toIntOrNull() ?: 0
-                val parallel = rbParallel.isChecked
+                val parallel = isParallelSelected
 
                 prefs.edit()
                     .putInt(ModuleSettings.KEY_CDN_SPEED_TEST_SIZE_MB, size)

@@ -2,6 +2,8 @@ package io.github.bbzq
 
 import android.content.Context
 import android.content.SharedPreferences
+import io.github.bbzq.feats.ResolverRegion
+import io.github.bbzq.feats.ResolverServers
 
 object ModuleSettings {
     const val PREFS_NAME = "bbzq_settings"
@@ -32,6 +34,7 @@ object ModuleSettings {
     const val KEY_FULL_SCREEN_QUALITY = "full_screen_quality"
     const val KEY_VIDEO_DOWNLOAD_ENABLED = "video_download_enabled"
     const val KEY_AUTO_LIKE_VIDEO_DETAIL_ENABLED = "auto_like_video_detail_enabled"
+    const val KEY_SHARE_REDIRECT_TO_OVERFLOW_ENABLED = "playback_share_redirect_to_overflow_enabled"
     const val KEY_PLAYER_TRANSPARENT_STATUS_BAR_ENABLED = "player_transparent_status_bar_enabled"
     const val KEY_HIDE_PLAYER_PORTRAIT_CONTROL_ENABLED = "hide_player_portrait_control_enabled"
     const val KEY_PLAYER_TRIPLE_SPEED_ENABLED = "player_triple_speed_enabled"
@@ -122,6 +125,11 @@ object ModuleSettings {
     const val KEY_DISABLE_LONG_PRESS_COPY_ENABLED = "disable_long_press_copy_enabled"
     const val KEY_ENHANCE_LONG_PRESS_COPY_ENABLED = "enhance_long_press_copy_enabled"
     const val KEY_CUSTOM_BOTTOM_BAR_ENABLED = "custom_bottom_bar_enabled"
+    const val KEY_APP_LANGUAGE = "app_language"
+    const val LANGUAGE_AUTO = "auto"
+    const val LANGUAGE_ZH_CN = "zh-CN"
+    const val LANGUAGE_ZH_TW = "zh-TW"
+    const val LANGUAGE_EN = "en"
     const val KEY_CUSTOM_THEME_ENABLED = "custom_theme_enabled"
     const val KEY_CUSTOM_THEME_COLOR = "custom_theme_color"
     const val KEY_CUSTOM_SKIN_ENABLED = "custom_skin_enabled"
@@ -135,6 +143,23 @@ object ModuleSettings {
     const val KEY_SEARCH_HOT_CLEAN_ENABLED = "search_hot_clean_enabled"
     const val KEY_SEARCH_SUGGEST_CLEAN_ENABLED = "search_suggest_clean_enabled"
     const val KEY_SEARCH_RESULT_AD_BLOCK_ENABLED = "search_result_ad_block_enabled"
+    const val KEY_SEA_BANGUMI_UNLOCK_ENABLED = "sea_bangumi_unlock_enabled"
+    const val KEY_SEA_UNLOCK_SEARCH_ENABLED = "sea_unlock_search_enabled"
+    const val KEY_SEA_UNLOCK_PLAY_ENABLED = "sea_unlock_play_enabled"
+    const val KEY_SEA_UNLOCK_DETAIL_ENABLED = "sea_unlock_detail_enabled"
+    const val KEY_SEA_UNLOCK_SUBTITLE_ENABLED = "sea_unlock_subtitle_enabled"
+    const val KEY_SEA_RESOLVER_MODE = "sea_resolver_mode"
+    const val KEY_SEA_RESOLVER_SEND_ACCESS_KEY = "sea_resolver_send_access_key"
+    const val KEY_SEA_RESOLVER_SERVER = "sea_resolver_server"
+    const val KEY_RESOLVER_SERVER_HK = "resolver_server_hk"
+    const val KEY_RESOLVER_SERVER_TW = "resolver_server_tw"
+    const val KEY_RESOLVER_SERVER_CN = "resolver_server_cn"
+    const val KEY_RESOLVER_DEFAULT_REGION = "resolver_default_region"
+    const val KEY_RESOLVER_CDN_HK = "resolver_cdn_hk"
+    const val KEY_RESOLVER_CDN_TW = "resolver_cdn_tw"
+    const val KEY_RESOLVER_CDN_SEA = "resolver_cdn_sea"
+    const val KEY_RESOLVER_CDN_CN = "resolver_cdn_cn"
+    const val KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS = "sea_unlock_relax_play_limits"
     const val KEY_FULL_NUMBER_FORMAT_ENABLED = "full_number_format_enabled"
     const val KEY_UNLOCK_COMMENT_GIF_ENABLED = "unlock_comment_gif_enabled"
     const val KEY_LAST_ACCESS_KEY = "last_access_key"
@@ -292,6 +317,7 @@ object ModuleSettings {
             it.getBoolean(KEY_UNLOCK_HIGHEST_BITRATE_ENABLED, false)
         },
         ExportableConfigSpec(KEY_AUTO_LIKE_VIDEO_DETAIL_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_AUTO_LIKE_VIDEO_DETAIL_ENABLED, false) },
+        ExportableConfigSpec(KEY_SHARE_REDIRECT_TO_OVERFLOW_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SHARE_REDIRECT_TO_OVERFLOW_ENABLED, false) },
         ExportableConfigSpec(KEY_PLAYER_TRANSPARENT_STATUS_BAR_ENABLED, ExportableValueType.BOOLEAN) {
             it.getBoolean(KEY_PLAYER_TRANSPARENT_STATUS_BAR_ENABLED, false)
         },
@@ -388,6 +414,13 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_SEARCH_HOT_CLEAN_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEARCH_HOT_CLEAN_ENABLED, false) },
         ExportableConfigSpec(KEY_SEARCH_SUGGEST_CLEAN_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEARCH_SUGGEST_CLEAN_ENABLED, false) },
         ExportableConfigSpec(KEY_SEARCH_RESULT_AD_BLOCK_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEARCH_RESULT_AD_BLOCK_ENABLED, false) },
+        ExportableConfigSpec(KEY_SEA_BANGUMI_UNLOCK_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_BANGUMI_UNLOCK_ENABLED, false) },
+        ExportableConfigSpec(KEY_SEA_UNLOCK_SEARCH_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_SEARCH_ENABLED, true) },
+        ExportableConfigSpec(KEY_SEA_UNLOCK_PLAY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_PLAY_ENABLED, true) },
+        ExportableConfigSpec(KEY_SEA_UNLOCK_DETAIL_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_DETAIL_ENABLED, true) },
+        ExportableConfigSpec(KEY_SEA_UNLOCK_SUBTITLE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_SUBTITLE_ENABLED, true) },
+        ExportableConfigSpec(KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS, true) },
+        ExportableConfigSpec(KEY_SEA_RESOLVER_SEND_ACCESS_KEY, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_RESOLVER_SEND_ACCESS_KEY, false) },
         ExportableConfigSpec(KEY_FULL_NUMBER_FORMAT_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_FULL_NUMBER_FORMAT_ENABLED, false) },
         ExportableConfigSpec(KEY_UNLOCK_COMMENT_GIF_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_UNLOCK_COMMENT_GIF_ENABLED, false) },
         ExportableConfigSpec(KEY_HIDE_DESKTOP_ICON, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_HIDE_DESKTOP_ICON, false) },
@@ -432,8 +465,25 @@ object ModuleSettings {
         add(ExportableConfigSpec(KEY_CUSTOM_SKIN_JSON, ExportableValueType.STRING) { prefs ->
             getCustomSkinJson(prefs)
         })
+        add(ExportableConfigSpec(KEY_APP_LANGUAGE, ExportableValueType.STRING) { prefs ->
+            getAppLanguage(prefs)
+        })
         add(ExportableConfigSpec(KEY_CUSTOM_CDN_HOST, ExportableValueType.STRING) { prefs ->
             getCustomCdnHost(prefs)
+        })
+        ResolverRegion.values().forEach { region ->
+            add(ExportableConfigSpec(region.prefKey, ExportableValueType.STRING) { prefs ->
+                normalizeResolverBaseUrl(prefs.getString(region.prefKey, null))
+            })
+            add(ExportableConfigSpec(region.cdnKey, ExportableValueType.STRING) { prefs ->
+                getResolverCdnHost(prefs, region)
+            })
+        }
+        add(ExportableConfigSpec(KEY_RESOLVER_DEFAULT_REGION, ExportableValueType.STRING) { prefs ->
+            getResolverDefaultRegion(prefs)?.name
+        })
+        add(ExportableConfigSpec(KEY_SEA_RESOLVER_MODE, ExportableValueType.STRING) { prefs ->
+            getSeaResolverMode(prefs)
         })
         add(ExportableConfigSpec(KEY_CDN_WIFI_PRIORITY, ExportableValueType.STRING) { prefs ->
             prefs.getString(KEY_CDN_WIFI_PRIORITY, null)
@@ -645,6 +695,13 @@ object ModuleSettings {
 
     fun isAutoLikeVideoDetailEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_AUTO_LIKE_VIDEO_DETAIL_ENABLED, false)
+
+    fun isShareRedirectToOverflowEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_SHARE_REDIRECT_TO_OVERFLOW_ENABLED, false)
+
+    fun setShareRedirectToOverflowEnabled(prefs: SharedPreferences, enabled: Boolean) {
+        prefs.edit().putBoolean(KEY_SHARE_REDIRECT_TO_OVERFLOW_ENABLED, enabled).apply()
+    }
 
     fun isFixLiveQualityUrlEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_FIX_LIVE_QUALITY_URL_ENABLED, false)
@@ -989,6 +1046,13 @@ object ModuleSettings {
     fun isCustomThemeEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_THEME_ENABLED, false)
 
+    fun getAppLanguage(prefs: SharedPreferences): String =
+        prefs.getString(KEY_APP_LANGUAGE, LANGUAGE_AUTO).orEmpty().ifBlank { LANGUAGE_AUTO }
+
+    fun setAppLanguage(prefs: SharedPreferences, language: String) {
+        prefs.edit().putString(KEY_APP_LANGUAGE, language).apply()
+    }
+
     fun getCustomThemeColor(prefs: SharedPreferences): Int =
         prefs.getInt(KEY_CUSTOM_THEME_COLOR, DEFAULT_CUSTOM_THEME_COLOR)
             .let { color -> (color and 0x00FFFFFF) or 0xFF000000.toInt() }
@@ -1067,6 +1131,65 @@ object ModuleSettings {
 
     fun isSearchResultAdBlockEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_SEARCH_RESULT_AD_BLOCK_ENABLED, false)
+
+    fun isSeaBangumiUnlockEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_SEA_BANGUMI_UNLOCK_ENABLED, false) && ResolverServers.configured(prefs).isNotEmpty()
+
+    fun isSeaBangumiSearchEnabled(prefs: SharedPreferences): Boolean =
+        isSeaBangumiUnlockEnabled(prefs) && prefs.getBoolean(KEY_SEA_UNLOCK_SEARCH_ENABLED, true)
+
+    fun isSeaBangumiPlayEnabled(prefs: SharedPreferences): Boolean =
+        isSeaBangumiUnlockEnabled(prefs) && prefs.getBoolean(KEY_SEA_UNLOCK_PLAY_ENABLED, true)
+
+    fun isSeaBangumiSubtitleEnabled(prefs: SharedPreferences): Boolean =
+        isSeaBangumiPlayEnabled(prefs) && prefs.getBoolean(KEY_SEA_UNLOCK_SUBTITLE_ENABLED, true)
+
+    fun isSeaBangumiDetailEnabled(prefs: SharedPreferences): Boolean =
+        isSeaBangumiUnlockEnabled(prefs) && prefs.getBoolean(KEY_SEA_UNLOCK_DETAIL_ENABLED, true)
+
+    /** Region hints the resolver accepts on the search request; INTL, TH and SEA all reach the same upstream. */
+    val SEA_RESOLVER_MODES = listOf("INTL", "TH", "SEA")
+
+    fun getSeaResolverMode(prefs: SharedPreferences): String =
+        prefs.getString(KEY_SEA_RESOLVER_MODE, null)?.uppercase()?.takeIf { it in SEA_RESOLVER_MODES } ?: SEA_RESOLVER_MODES.first()
+
+    /** Off by default: the account key only leaves the device when the user opts in. */
+    fun isSeaResolverSendAccessKeyEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_SEA_RESOLVER_SEND_ACCESS_KEY, false)
+
+    /** The region asked first when nothing is known about an episode yet; null means list order. */
+    fun getResolverDefaultRegion(prefs: SharedPreferences): ResolverRegion? =
+        ResolverRegion.parse(prefs.getString(KEY_RESOLVER_DEFAULT_REGION, null))
+
+    /** Host that replaces the stream host of a region's bangumi; null follows the regular CDN settings. */
+    fun getResolverCdnHost(prefs: SharedPreferences, region: ResolverRegion): String? =
+        normalizeCdnHost(prefs.getString(region.cdnKey, null))
+
+    /** Clears the substituted reply's ability switches (mini window, background play, cast...). */
+    fun isSeaRelaxPlayLimitsEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS, true)
+
+    /** Normalizes a resolver server address, keeping scheme, port, and subpaths. */
+    fun normalizeResolverBaseUrl(value: String?): String? {
+        val raw = value.orEmpty().trim().trimEnd('/')
+        if (raw.isEmpty()) return null
+        val hasScheme = raw.startsWith("http://", ignoreCase = true) || raw.startsWith("https://", ignoreCase = true)
+        val uri = runCatching { java.net.URI(if (hasScheme) raw else "https://$raw") }.getOrNull() ?: return null
+        val host = uri.host ?: return null
+        if (host.isEmpty() || host.any(Char::isWhitespace)) return null
+        val scheme = if (hasScheme) uri.scheme.lowercase() else {
+            if ((uri.port > 0 && uri.port != 443) || isLocalResolverHost(host)) "http" else "https"
+        }
+        val portPart = if (uri.port > 0) ":${uri.port}" else ""
+        val path = uri.rawPath?.trimEnd('/') ?: ""
+        return "$scheme://$host$portPart$path"
+    }
+
+    private fun isLocalResolverHost(host: String): Boolean {
+        val h = host.lowercase()
+        return h == "localhost" || h.endsWith(".local") || h.endsWith(".localhost") ||
+            h.startsWith("127.") || h.startsWith("10.") || h.startsWith("192.168.")
+    }
 
     fun isFullNumberFormatEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_FULL_NUMBER_FORMAT_ENABLED, false)

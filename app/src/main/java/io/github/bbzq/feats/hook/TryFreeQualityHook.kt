@@ -46,6 +46,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
         }
         env.hostContext?.let { context ->
+            StorySceneDetector.register(context)
             VideoStatsOverlayController.getOrCreate(context)
         }
 
@@ -182,7 +183,11 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             count += hookSafely(method, "response/playView") {
                 env.hookBefore(method) { param ->
                     runCatching {
-                        preparePlayViewRequest(param.args.getOrNull(0))
+                        val req = param.args.getOrNull(0)
+                        if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryRequest(req)) {
+                            return@runCatching
+                        }
+                        preparePlayViewRequest(req)
                         val handler = param.args.getOrNull(1) ?: return@runCatching
                         hookHandlerClass(handler.javaClass)
                     }.onFailure {
@@ -191,6 +196,9 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                 }
                 env.hookAfter(method) { param ->
                     runCatching {
+                        if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryResponse(param.result)) {
+                            return@runCatching
+                        }
                         processPlayViewResponse(param.result)
                     }.onFailure {
                         log("TryFreeQuality response after hook failed at ${method.declaringClass.name}.${method.name}", it)
@@ -209,7 +217,11 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         methods.forEach { onNextMethod ->
             val installed = env.hookBefore(onNextMethod) { p ->
                 runCatching {
-                    processPlayViewResponse(p.args.firstOrNull())
+                    val resp = p.args.firstOrNull()
+                    if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryResponse(resp)) {
+                        return@runCatching
+                    }
+                    processPlayViewResponse(resp)
                 }.onFailure {
                     log("TryFreeQuality handler onNext hook failed", it)
                 }
@@ -227,6 +239,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             count += hookSafely(method, "ui/getVipFree") {
                 env.hookAfter(method) { param ->
                     if (!isTrialEnabled() || !ModuleSettings.isUnlockVideoFeaturesUiEnabled(prefs)) return@hookAfter
+                    if (StorySceneDetector.isStoryForeground()) return@hookAfter
                     val needVip = (param.thisObject?.getObjectField("needVip_") as? Boolean) ?: return@hookAfter
                     param.result = needVip
                 }
@@ -236,6 +249,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             count += hookSafely(method, "ui/getNeedVip") {
                 env.hookBefore(method) { param ->
                     if (!isTrialEnabled() || !ModuleSettings.isUnlockVideoFeaturesUiEnabled(prefs)) return@hookBefore
+                    if (StorySceneDetector.isStoryForeground()) return@hookBefore
                     param.result = false
                 }
             }
@@ -255,6 +269,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
 
     private fun processPlayViewResponse(target: Any?) {
         if (target == null) return
+        if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryResponse(target)) return
         val trial = isTrialEnabled()
         val highest = isHighestBitrateEnabled()
         val preferHardware = ModuleSettings.isPreferHardwareDecoderEnabled(prefs)
@@ -337,6 +352,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
 
     private fun preparePlayViewRequest(request: Any?) {
         if (request == null) return
+        if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryRequest(request)) return
         val trial = isTrialEnabled()
         val highest = isHighestBitrateEnabled()
         if (!trial && !highest) return

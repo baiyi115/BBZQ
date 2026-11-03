@@ -31,7 +31,12 @@ import io.github.bbzq.feats.hook.HomeRecommendTabHook
 import io.github.bbzq.feats.hook.ComponentPoolBlockHook
 import io.github.bbzq.feats.hook.HomeComponentHideHook
 import io.github.bbzq.feats.hook.HomeTopBarPurifyHook
+import io.github.bbzq.feats.hook.HomeFrameHook
 import io.github.bbzq.feats.hook.SearchPurifyHook
+import io.github.bbzq.feats.hook.SeaBangumiDetailHook
+import io.github.bbzq.feats.hook.SeaBangumiPlayHook
+import io.github.bbzq.feats.hook.SeaBangumiSearchHook
+import io.github.bbzq.feats.hook.SeaBangumiSubtitleHook
 import io.github.bbzq.feats.hook.RewardAdHook
 import io.github.bbzq.feats.hook.SettingHook
 import io.github.bbzq.feats.hook.ShareHook
@@ -64,6 +69,7 @@ import io.github.bbzq.feats.hook.LiveReservationHook
 import io.github.bbzq.feats.hook.LiveRoomBlurMaskHook
 import io.github.bbzq.feats.hook.LiveRoomVerticalSwipeHook
 import io.github.bbzq.feats.hook.MediaSessionFixHook
+import io.github.bbzq.feats.hook.VideoDetailShareRedirectHook
 import io.github.bbzq.feats.hook.VideoEndRecommendHook
 import io.github.bbzq.feats.hook.mbgeb.LiveBackupUrlHook
 import io.github.bbzq.feats.hook.mbgeb.LiveQualityHook
@@ -198,7 +204,12 @@ object RoamingRuntime {
                 ::HomeRecommendPreloadHook,
                 ::DynamicPageHook,
                 ::HomeTopBarPurifyHook,
+                ::HomeFrameHook,
                 ::SearchPurifyHook,
+                ::SeaBangumiSearchHook,
+                ::SeaBangumiPlayHook,
+                ::SeaBangumiDetailHook,
+                ::SeaBangumiSubtitleHook,
                 ::StoryDefaultLaunchHook,
                 ::StoryDetailRedirectHook,
                 ::StoryPlayerAdHook,
@@ -241,6 +252,7 @@ object RoamingRuntime {
                 ::LiveQualityHook,
                 ::LiveBackupUrlHook,
                 ::MediaProxyHook,
+                ::VideoDetailShareRedirectHook,
             )
             ProcessScope.UNSUPPORTED -> emptyList()
         }

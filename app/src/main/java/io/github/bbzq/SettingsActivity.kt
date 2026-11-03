@@ -5,6 +5,7 @@ import android.animation.AnimatorListenerAdapter
 import android.animation.ValueAnimator
 import android.app.Activity
 import android.app.AlertDialog
+import android.content.Context
 import android.content.Intent
 import android.graphics.Color
 import android.graphics.Rect
@@ -16,6 +17,7 @@ import android.view.Gravity
 import android.view.KeyEvent
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.Window
 import android.view.WindowInsets
 import android.widget.FrameLayout
@@ -37,6 +39,8 @@ class SettingsActivity : Activity() {
         ReadableModulePreferences(this, base)
     }
 
+    private var hostEntry = false
+
     private var pendingImportArchive: ByteArray? = null
     private var currentFactory: SettingsContentFactory? = null
     private var pendingSearchRevealKey: String? = null
@@ -46,6 +50,8 @@ class SettingsActivity : Activity() {
     private var searchHighlightRunnable: Runnable? = null
 
     private val pageStack = ArrayDeque<String>()
+    private val pageScrollPositions = mutableMapOf<String, Int>()
+    private var currentPage: String? = null
     private lateinit var toolbarTitleView: TextView
     private lateinit var backButtonView: TextView
     private lateinit var contentContainer: FrameLayout
@@ -58,14 +64,69 @@ class SettingsActivity : Activity() {
     private var currentBottomInset: Int = 0
     private var toolbarBaseTop: Int = 0
 
+    override fun attachBaseContext(newBase: Context) {
+        val basePrefs = newBase.getSharedPreferences(ModuleSettings.PREFS_NAME, Context.MODE_PRIVATE)
+        val lang = ModuleSettings.getAppLanguage(basePrefs)
+        super.attachBaseContext(LocaleHelper.wrapContext(newBase, lang))
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        if (savedInstanceState != null) {
+            val savedStack = savedInstanceState.getStringArrayList(KEY_PAGE_STACK)
+            if (!savedStack.isNullOrEmpty()) {
+                pageStack.clear()
+                savedStack.forEach { pageStack.addLast(allowedPage(it)) }
+            }
+            savedInstanceState.getBundle(KEY_PAGE_SCROLL_POSITIONS)?.let { positions ->
+                positions.keySet().forEach { page ->
+                    pageScrollPositions[page] = positions.getInt(page)
+                }
+            }
+        }
         requestWindowFeature(Window.FEATURE_NO_TITLE)
+        hostEntry = intent.hasExtra(RuntimeEnvironmentInfo.EXTRA_RUNTIME_VALUES)
         RuntimeEnvironmentInfo.applyRuntimeSnapshotFromIntent(intent, prefs)
         LinkerGuard.triggerConflict(this)
 
-        val initialPage = intent.getStringExtra(EXTRA_PAGE) ?: PAGE_ROOT
-        pageStack.addLast(initialPage)
+        when (RuntimeEnvironmentInfo.frameworkGate(prefs)) {
+            RuntimeEnvironmentInfo.FrameworkGate.ALLOWED -> setupContent()
+            RuntimeEnvironmentInfo.FrameworkGate.NEEDS_ROOT -> verifyRootThenSetup()
+            RuntimeEnvironmentInfo.FrameworkGate.BLOCKED -> finish()
+        }
+    }
+
+    private fun verifyRootThenSetup() {
+        Thread {
+            val granted = RootUtils.executeSuCommand("id").isSuccess
+            runOnUiThread {
+                if (isFinishing || isDestroyed) return@runOnUiThread
+                if (granted) {
+                    setupContent()
+                } else {
+                    finish()
+                }
+            }
+        }.start()
+    }
+
+    private fun showFrameworkGateDialog(titleRes: Int, messageRes: Int, retry: Boolean) {
+        val builder = AlertDialog.Builder(this)
+            .setTitle(titleRes)
+            .setMessage(messageRes)
+            .setCancelable(false)
+            .setNegativeButton(R.string.framework_gate_exit) { _, _ -> finish() }
+        if (retry) {
+            builder.setPositiveButton(R.string.framework_gate_retry) { _, _ -> verifyRootThenSetup() }
+        }
+        builder.show()
+    }
+
+    private fun setupContent() {
+        val initialPage = pageStack.lastOrNull() ?: allowedPage(intent.getStringExtra(EXTRA_PAGE) ?: PAGE_ROOT)
+        if (pageStack.isEmpty()) {
+            pageStack.addLast(initialPage)
+        }
 
         val toolbar = createToolbar(initialPage)
         contentContainer = FrameLayout(this)
@@ -115,7 +176,17 @@ class SettingsActivity : Activity() {
 
         setContentView(root)
         applyWindowInsets(contentRoot, toolbar, scrollView)
+        restorePageScrollPosition(initialPage, scrollView)
         updateBackCallback()
+    }
+
+    override fun onSaveInstanceState(outState: Bundle) {
+        super.onSaveInstanceState(outState)
+        saveCurrentScrollPosition()
+        outState.putStringArrayList(KEY_PAGE_STACK, ArrayList(pageStack))
+        outState.putBundle(KEY_PAGE_SCROLL_POSITIONS, Bundle().apply {
+            pageScrollPositions.forEach { (page, scrollY) -> putInt(page, scrollY) }
+        })
     }
 
     override fun onDestroy() {
@@ -129,9 +200,11 @@ class SettingsActivity : Activity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
+        hostEntry = intent.hasExtra(RuntimeEnvironmentInfo.EXTRA_RUNTIME_VALUES)
         RuntimeEnvironmentInfo.applyRuntimeSnapshotFromIntent(intent, prefs)
         LinkerGuard.triggerConflict(this)
-        val targetPage = intent.getStringExtra(EXTRA_PAGE) ?: PAGE_ROOT
+        if (!::contentContainer.isInitialized) return
+        val targetPage = allowedPage(intent.getStringExtra(EXTRA_PAGE) ?: PAGE_ROOT)
         if (targetPage == PAGE_ROOT) {
             pageStack.clear()
             pageStack.addLast(PAGE_ROOT)
@@ -174,7 +247,11 @@ class SettingsActivity : Activity() {
 
     // ── In-activity Navigation ────────────────────────────────────────────────
 
+    private fun allowedPage(page: String): String =
+        if (hostEntry || page in STANDALONE_PAGES) page else PAGE_ROOT
+
     private fun navigateTo(page: String) {
+        if (!hostEntry && page !in STANDALONE_PAGES) return
         if (pageStack.lastOrNull() == page) return
         pageStack.addLast(page)
         switchContent(page)
@@ -212,6 +289,7 @@ class SettingsActivity : Activity() {
     }
 
     private fun switchContent(page: String) {
+        saveCurrentScrollPosition()
         clearSettingsSearchHighlight()
         currentFactory?.destroy()
         currentFactory = null
@@ -238,7 +316,28 @@ class SettingsActivity : Activity() {
                 ViewGroup.LayoutParams.MATCH_PARENT,
             ),
         )
-        scrollView.post { revealPendingSearchTarget() }
+        restorePageScrollPosition(page, scrollView)
+    }
+
+    private fun saveCurrentScrollPosition() {
+        val page = currentPage ?: return
+        if (!::contentContainer.isInitialized) return
+        val scrollView = contentContainer.getChildAt(0) as? ScrollView ?: return
+        pageScrollPositions[page] = scrollView.scrollY
+    }
+
+    private fun restorePageScrollPosition(page: String, scrollView: ScrollView) {
+        currentPage = page
+        val scrollY = pageScrollPositions[page] ?: 0
+        // ScrollView clamps its offset during layout, so restore once the content is measured.
+        scrollView.viewTreeObserver.addOnGlobalLayoutListener(object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                scrollView.viewTreeObserver.removeOnGlobalLayoutListener(this)
+                if (contentContainer.getChildAt(0) !== scrollView) return
+                scrollView.scrollTo(0, scrollY)
+                revealPendingSearchTarget()
+            }
+        })
     }
 
     private fun buildFactory(page: String): SettingsContentFactory =
@@ -246,6 +345,7 @@ class SettingsActivity : Activity() {
             context = this,
             prefs = prefs,
             page = page,
+            hostEntry = hostEntry,
             openPage = { targetPage -> navigateTo(targetPage) },
             onExportClick = { launchExportConfig() },
             onImportClick = { launchImportConfig() },
@@ -453,20 +553,20 @@ class SettingsActivity : Activity() {
                 isClickable = true
                 isFocusable = true
                 setPadding(dp(8), dp(4), dp(8), dp(4))
+                visibility = if (hostEntry) View.VISIBLE else View.GONE
                 setOnClickListener { showSettingsSearchDialog() }
             })
 
             addView(TextView(this@SettingsActivity).apply {
                 text = getString(R.string.toolbar_save_and_restart)
+                visibility = if (hostEntry) View.VISIBLE else View.GONE
                 textSize = 15f
                 setTextColor(getColor(R.color.accent_pink))
                 isClickable = true
                 isFocusable = true
                 setPadding(dp(8), dp(4), dp(8), dp(4))
                 setOnClickListener {
-                    RootUtils.showRestartBilibiliDialog(this@SettingsActivity, prefs) {
-                        finish()
-                    }
+                    RootUtils.showRestartBilibiliDialog(this@SettingsActivity, prefs)
                 }
             })
 
@@ -488,16 +588,23 @@ class SettingsActivity : Activity() {
         PAGE_HIDDEN_FEATURES -> getString(R.string.about_hidden_features_title)
         PAGE_UPDATE -> getString(R.string.about_update_title)
         PAGE_CONFIG_BACKUP -> getString(R.string.about_config_backup_title)
-        else -> getString(R.string.settings_title)
+        PAGE_SEA_BANGUMI_UNLOCK -> getString(R.string.sea_bangumi_unlock_title)
+        PAGE_ABOUT -> getString(R.string.about_page_title)
+        else -> SettingsCategory.forPage(page)?.let { getString(it.titleRes) }
+            ?: getString(R.string.settings_title)
     }
 
     private fun showSettingsSearchDialog() {
         SettingsSearchDialog.show(
             activity = this,
-            targets = currentFactory?.collectSearchTargets().orEmpty(),
+            targets = globalSearchFactory().collectSearchTargets(),
             onPick = ::revealSearchTarget,
         )
     }
+
+    // 分类页只收录自己的设置项，搜索需要覆盖全部页面，所以统一由首页工厂建立索引。
+    private fun globalSearchFactory(): SettingsContentFactory =
+        currentFactory?.takeIf { pageStack.lastOrNull() == PAGE_ROOT } ?: buildFactory(PAGE_ROOT)
 
     private fun revealSearchTarget(target: SettingsSearchTarget) {
         if (target.page != pageStack.lastOrNull()) {
@@ -505,7 +612,7 @@ class SettingsActivity : Activity() {
             openSearchTargetPage(target.page)
             return
         }
-        val view = target.view ?: currentFactory?.findSearchTarget(target.item.key)?.view ?: return
+        val view = currentFactory?.findSearchTarget(target.item.key)?.view ?: target.view ?: return
         scrollAndHighlightSearchTarget(view)
     }
 
@@ -618,17 +725,7 @@ class SettingsActivity : Activity() {
             userName.takeIf { it.isNotBlank() },
             uid.takeIf { it.isNotBlank() }?.let { "UID $it" },
         ).joinToString(" · ")
-        return text.takeIf { it.isNotBlank() }
-            ?.let { AccountWatermarkView(this, it) }
-            ?: runCatching {
-                val snapshot = io.github.bbzq.feats.HostAccountResolver.resolve(this, classLoader)
-                if (!snapshot.loggedIn) return@runCatching null
-                val fallbackText = listOfNotNull(
-                    snapshot.userName.takeIf { it.isNotBlank() },
-                    snapshot.uid.takeIf { it.isNotBlank() }?.let { "UID $it" },
-                ).joinToString(" · ")
-                fallbackText.takeIf { it.isNotBlank() }?.let { AccountWatermarkView(this, it) }
-            }.getOrNull()
+        return text.takeIf { it.isNotBlank() }?.let { AccountWatermarkView(this, it) }
     }
 
     // ── Window Insets ─────────────────────────────────────────────────────────
@@ -690,6 +787,8 @@ class SettingsActivity : Activity() {
     private fun dp(value: Int): Int = (value * resources.displayMetrics.density).toInt()
 
     companion object {
+        private const val KEY_PAGE_STACK = "bbzq_page_stack"
+        private const val KEY_PAGE_SCROLL_POSITIONS = "bbzq_page_scroll_positions"
         const val EXTRA_PAGE = "settings_page"
         const val PAGE_ROOT = "root"
         const val PAGE_SKIP_VIDEO_AD_SWITCH = "skip_video_ad_switch"
@@ -697,6 +796,21 @@ class SettingsActivity : Activity() {
         const val PAGE_HIDDEN_FEATURES = "hidden_features"
         const val PAGE_UPDATE = "update"
         const val PAGE_CONFIG_BACKUP = "config_backup"
+        const val PAGE_SEA_BANGUMI_UNLOCK = "sea_bangumi_unlock"
+        const val PAGE_ABOUT = "about"
+        private val STANDALONE_PAGES = setOf(PAGE_ROOT, PAGE_UPDATE, PAGE_ABOUT)
+        const val PAGE_CATEGORY_APPEARANCE = "category_appearance"
+        const val PAGE_CATEGORY_SHARE = "category_share"
+        const val PAGE_CATEGORY_STARTUP = "category_startup"
+        const val PAGE_CATEGORY_NETWORK = "category_network"
+        const val PAGE_CATEGORY_HOME = "category_home"
+        const val PAGE_CATEGORY_SEARCH = "category_search"
+        const val PAGE_CATEGORY_PLAYBACK = "category_playback"
+        const val PAGE_CATEGORY_STORY = "category_story"
+        const val PAGE_CATEGORY_LIVE = "category_live"
+        const val PAGE_CATEGORY_COMMENT = "category_comment"
+        const val PAGE_CATEGORY_DYNAMIC = "category_dynamic"
+        const val PAGE_CATEGORY_MINE = "category_mine"
         private const val REQUEST_EXPORT_CONFIG = 0x5001
         private const val REQUEST_IMPORT_CONFIG = 0x5002
         private const val REQUEST_IMPORT_CUSTOM_SKIN = 0x5003

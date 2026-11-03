@@ -61,12 +61,12 @@ object BiliSymbolResolver {
     private const val HP_REWARD_AD_HEADER = "RewardAdHook.HeaderTimer"
     private const val HP_REWARD_AD_COUNTDOWN = "RewardAdHook.CountDownText"
     private const val HP_REWARD_AD_JUMP_CLOCK = "RewardAdHook.JumpClock"
+    private const val HP_REWARD_AD_TIMER = "RewardAdHook.CountdownTimer"
     private const val HP_REWARD_AD_ACTIVITY_SWEEPER = "RewardAdHook.ActivitySweeper"
     private const val HP_REWARD_AD_MINI_GAME = "RewardAdHook.MiniGameRewardedVideoAd"
     private const val HP_TRY_FREE_QUALITY = "TryFreeQualityHook.GeneratedMessages"
     private const val HP_TEENAGERS_MODE = "TeenagersModeHook.DialogActivity"
     private const val HP_DOWNLOAD_THREAD_LISTENER = "DownloadThreadHook.Listener"
-    private const val HP_DOWNLOAD_THREAD_REPORT = "DownloadThreadHook.ReportMethod"
     private const val HP_STORY_PLAYER_AD = "StoryPlayerAdHook.InstallPoints"
     private const val HP_STORY_FULLSCREEN = "StoryFullscreenHook.StoryVideoActivity"
     private const val HP_STORY_FULLSCREEN_ON_CREATE = "StoryFullscreenHook.OnCreate"
@@ -93,6 +93,8 @@ object BiliSymbolResolver {
     private const val HP_VIDEO_DETAIL_RELATE_FEED = "VideoDetailRelateFilterHook.InstallPoints"
     private const val HP_HOME_TOP_BAR = "HomeTopBarPurifyHook.InstallPoints"
     private const val HP_HOME_TOP_BAR_GAME = "HomeTopBarPurifyHook.GameMenu"
+    private const val HP_HOME_TOP_BAR_COMPOSE_GAME = "HomeTopBarPurifyHook.ComposeGameMenu"
+    private const val HP_HOME_FRAME = "HomeFrameHook.TabData"
     private const val HP_HOME_TOP_BAR_VIEW_CREATED = "HomeTopBarPurifyHook.OnViewCreated"
     private const val HP_HOME_TOP_BAR_DEFAULT_WORD = "HomeTopBarPurifyHook.DefaultSearchWord"
     private const val HP_BOTTOM_BAR = "BottomBarHook.InstallPoints"
@@ -291,7 +293,7 @@ object BiliSymbolResolver {
             scanShare(classLoader, ::bridge)
         }
         val rewardAd = scanHookPoint(HP_REWARD_AD, hookPoints, scanErrors, log) {
-            scanRewardAd(classLoader)
+            scanRewardAd(classLoader, ::bridge)
         }
         val tryFreeQuality = scanHookPoint(HP_TRY_FREE_QUALITY, hookPoints, scanErrors, log) {
             scanTryFreeQuality(classLoader, ::bridge)
@@ -314,14 +316,10 @@ object BiliSymbolResolver {
         val downloadThreadListeners = scanHookPoint(HP_DOWNLOAD_THREAD_LISTENER, hookPoints, scanErrors, log) {
             scanDownloadThreadListeners(classLoader, ::bridge)
         }.orEmpty()
-        val downloadThreadReport = scanOptionalHookPoint(HP_DOWNLOAD_THREAD_REPORT, hookPoints, scanErrors, log) {
-            scanDownloadThreadReportMethod(classLoader, ::bridge)
-        }
-        val downloadThread = if (downloadThreadListeners.isNotEmpty() || downloadThreadReport != null) {
+        val downloadThread = if (downloadThreadListeners.isNotEmpty()) {
             DownloadThreadSymbols(
                 listeners = downloadThreadListeners,
-                reportMethod = downloadThreadReport,
-                evidence = "listeners=${downloadThreadListeners.size},report=${downloadThreadReport != null}",
+                evidence = "listeners=${downloadThreadListeners.size}",
             )
         } else {
             null
@@ -333,7 +331,7 @@ object BiliSymbolResolver {
             scanStoryFullscreen(classLoader)
         }
         val storyDanmaku = scanHookPoint(HP_STORY_DANMAKU, hookPoints, scanErrors, log) {
-            scanStoryDanmaku(classLoader)
+            scanStoryDanmaku(classLoader, ::bridge)
         }
         val storyComponentAlpha = scanHookPoint(HP_STORY_COMPONENT_ALPHA, hookPoints, scanErrors, log) {
             scanStoryComponentAlpha(classLoader)
@@ -346,6 +344,11 @@ object BiliSymbolResolver {
         }
         val homeTopBar = scanHookPoint(HP_HOME_TOP_BAR, hookPoints, scanErrors, log) {
             scanHomeTopBar(classLoader)
+        }
+        val homeFrame = scanOptionalHookPoint(HP_HOME_FRAME, hookPoints, scanErrors, log) {
+            val symbols = locateHomeFrameSymbols(classLoader)
+            if (symbols == null) SymbolScanResult.Missing("new home frame model not verified")
+            else SymbolScanResult.Found(symbols, "HomeTabData", symbols.evidence)
         }
         val bottomBar = scanHookPoint(HP_BOTTOM_BAR, hookPoints, scanErrors, log) {
             scanBottomBar(classLoader, ::bridge)
@@ -414,6 +417,7 @@ object BiliSymbolResolver {
             videoDetailBannerAd = videoDetailBannerAd,
             videoDetailRelateFeed = videoDetailRelateFeed,
             homeTopBar = homeTopBar,
+            homeFrame = homeFrame,
             bottomBar = bottomBar,
             homeRecommendFeed = homeRecommendFeed,
             homeRecommendTabs = homeRecommendTabs,
@@ -599,8 +603,7 @@ object BiliSymbolResolver {
             ?.allMethods()
             ?.filter {
                 Modifier.isStatic(it.modifiers) &&
-                    it.parameterTypes.contentEquals(arrayOf(String::class.java)) &&
-                    it.returnType == Void.TYPE
+                    it.parameterTypes.contentEquals(arrayOf(String::class.java))
             }
             ?.toList()
             .orEmpty()
@@ -659,7 +662,10 @@ object BiliSymbolResolver {
         return SymbolScanResult.Found(symbols, "ClipboardFallback", symbols.evidence, hookPoints)
     }
 
-    private fun scanRewardAd(classLoader: ClassLoader): SymbolScanResult<RewardAdSymbols> {
+    private fun scanRewardAd(
+        classLoader: ClassLoader,
+        bridge: () -> DexKitBridge?,
+    ): SymbolScanResult<RewardAdSymbols> {
         val activityClass = REWARD_ACTIVITY_CLASSES.firstNotNullOfOrNull { classLoader.loadClassOrNull(it) }
         val activityOnCreate = activityClass?.findMethod("onCreate", Void.TYPE, Bundle::class.java)
         val activityOnResume = activityClass?.findMethod("onResume", Void.TYPE)
@@ -721,11 +727,47 @@ object BiliSymbolResolver {
                 }
                 ?.apply { isAccessible = true }
         }
+        // Reward display moved from the activity into RewardAdDisplay: the countdown lives in a
+        // small timer model and the jump-return clock is an instance field on the display.
+        val displayClass = classLoader.loadClassOrNull(REWARD_DISPLAY)
+        val jumpStartField = displayClass?.declaredFields
+            ?.singleOrNull { !Modifier.isStatic(it.modifiers) && it.type == java.lang.Long::class.java }
+            ?.apply { isAccessible = true }
+        val jumpResumeMethod = if (displayClass != null && jumpStartField != null) {
+            findDeclaredMethods(bridge, classLoader) {
+                searchPackages(REWARD_PACKAGE).matcher(
+                    MethodMatcher.create()
+                        .declaredClass(displayClass)
+                        .paramCount(0)
+                        .returnType(Void.TYPE)
+                        .usingStrings(REWARD_JUMP_REASON),
+                )
+            }.singleOrNull()?.apply { isAccessible = true }
+        } else {
+            null
+        }
+        val timerSetTotalMethod = findDeclaredMethods(bridge, classLoader) {
+            searchPackages(REWARD_PACKAGE).matcher(
+                MethodMatcher.create().name("start").paramCount(0).returnType(Void.TYPE),
+            )
+        }.mapNotNull { it.declaringClass.findRewardTimerSetTotal() }.distinctBy(Method::toGenericString).singleOrNull()
+
         val hookPoints = listOf(
             childHookPoint(HP_REWARD_AD_ACTIVITY, activityCount > 0, "reward activity hooks not found", "methods=$activityCount"),
             childHookPoint(HP_REWARD_AD_HEADER, headerCount > 0, "reward header timer hooks not found", "methods=$headerCount"),
             childHookPoint(HP_REWARD_AD_COUNTDOWN, countDownCount > 0, "countdown text hooks not found", "methods=$countDownCount"),
-            optionalChildHookPoint(HP_REWARD_AD_JUMP_CLOCK, jumpClockField != null, "jump clock field not found", "field=${jumpClockField?.name}"),
+            optionalChildHookPoint(
+                HP_REWARD_AD_JUMP_CLOCK,
+                jumpClockField != null || jumpResumeMethod != null,
+                "jump clock field not found",
+                "static=${jumpClockField?.name},resume=${jumpResumeMethod?.name},start=${jumpStartField?.name}",
+            ),
+            optionalChildHookPoint(
+                HP_REWARD_AD_TIMER,
+                timerSetTotalMethod != null,
+                "reward countdown timer not found",
+                "method=${timerSetTotalMethod?.declaringClass?.name}.${timerSetTotalMethod?.name}",
+            ),
             HookPointStatus.found(HP_REWARD_AD_ACTIVITY_SWEEPER, "android.app.Activity.onResume", "sdk=true"),
             optionalChildHookPoint(
                 HP_REWARD_AD_MINI_GAME,
@@ -734,7 +776,8 @@ object BiliSymbolResolver {
                 "methods=$miniGameRewardCount",
             ),
         )
-        val total = activityCount + headerCount + countDownCount + (if (miniGameRewardReady) 1 else 0) + 1
+        val total = activityCount + headerCount + countDownCount + (if (miniGameRewardReady) 1 else 0) +
+            (if (timerSetTotalMethod != null) 1 else 0) + (if (jumpResumeMethod != null) 1 else 0) + 1
         if (total == 1) return SymbolScanResult.Missing("reward ad target hook points not found")
         val symbols = RewardAdSymbols(
             activityOnCreate = activityOnCreate?.let(MethodDescriptor::of),
@@ -746,6 +789,9 @@ object BiliSymbolResolver {
             countDownSetTotalTime = countDownSetTotalTime?.let(MethodDescriptor::of),
             countDownSetElapsedTime = countDownSetElapsedTime?.let(MethodDescriptor::of),
             jumpClockField = jumpClockField?.let(FieldDescriptor::of),
+            timerSetTotalMethod = timerSetTotalMethod?.let(MethodDescriptor::of),
+            jumpResumeMethod = jumpResumeMethod?.let(MethodDescriptor::of),
+            jumpStartField = if (jumpResumeMethod != null) jumpStartField?.let(FieldDescriptor::of) else null,
             miniGameRewardShow = if (miniGameRewardReady) miniGameRewardShow?.let(MethodDescriptor::of) else null,
             miniGameRewardEmitEvent = if (miniGameRewardReady) {
                 miniGameRewardEmitEvent?.let(MethodDescriptor::of)
@@ -758,7 +804,8 @@ object BiliSymbolResolver {
                 null
             },
             evidence = "activity=$activityCount,header=$headerCount,countDown=$countDownCount," +
-                "jumpClock=${jumpClockField != null},miniGame=$miniGameRewardReady",
+                "jumpClock=${jumpClockField != null},jumpResume=${jumpResumeMethod != null}," +
+                "timer=${timerSetTotalMethod != null},miniGame=$miniGameRewardReady",
         )
         return SymbolScanResult.Found(symbols, "RewardAd", symbols.evidence, hookPoints)
     }
@@ -773,6 +820,46 @@ object BiliSymbolResolver {
                 method.parameterTypes.contentEquals(arrayOf(parameterType)) &&
                 (method.name == name || method.name.startsWith("$name\$"))
         }?.apply { isAccessible = true }
+
+    private fun findSkinResponseClass(classLoader: ClassLoader, bridge: DexKitBridge): Class<*>? {
+        fun Class<*>.hasUserGarbSetter() = declaredMethods.any { it.name == "setUserGarb" && it.parameterCount == 1 }
+        val searched = runCatching {
+            bridge.findClass(
+                FindClass.create().matcher(ClassMatcher.create().usingStrings("user_equip")),
+            ).mapNotNull { classLoader.loadClassOrNull(it.name) }
+                .firstOrNull { it.hasUserGarbSetter() }
+        }.getOrNull()
+        return searched ?: classLoader.loadClassOrNull(GARB_DATA_CLASS)?.takeIf { it.hasUserGarbSetter() }
+    }
+
+    /** Countdown model: start()/stop()/d()/e() plus b(int) that receives the total duration in ms. */
+    private fun Class<*>.findRewardTimerSetTotal(): Method? {
+        fun noArgVoid(name: String) = declaredMethods.any {
+            it.name == name && it.parameterCount == 0 && it.returnType == Void.TYPE && !Modifier.isStatic(it.modifiers)
+        }
+        if (!listOf("start", "stop", "d", "e").all(::noArgVoid)) return null
+        val longFields = declaredFields.count { !Modifier.isStatic(it.modifiers) && it.type == Long::class.javaPrimitiveType }
+        if (longFields != 1) return null
+        return declaredMethods.singleOrNull {
+            it.name == "b" &&
+                it.returnType == Void.TYPE &&
+                it.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType)) &&
+                !Modifier.isStatic(it.modifiers)
+        }?.apply { isAccessible = true }
+    }
+
+    private fun findDeclaredMethods(
+        bridge: () -> DexKitBridge?,
+        classLoader: ClassLoader,
+        query: FindMethod.() -> FindMethod,
+    ): List<Method> {
+        val currentBridge = bridge() ?: return emptyList()
+        return runCatching {
+            currentBridge.findMethod(FindMethod.create().query())
+                .mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }
+                .distinctBy(Method::toGenericString)
+        }.getOrDefault(emptyList())
+    }
 
     private fun scanTryFreeQuality(
         classLoader: ClassLoader,
@@ -951,35 +1038,8 @@ object BiliSymbolResolver {
         bridge: () -> DexKitBridge?,
     ): SymbolScanResult<VideoQualitySymbols> {
         val currentBridge = bridge() ?: return SymbolScanResult.Missing("DexKitBridge unavailable")
-        
-        // 1. AutoSupremumQuality constructor
-        val autoSupremumQualityClass = runCatching {
-            currentBridge.findClass(
-                FindClass.create().matcher(ClassMatcher.create().usingStrings("AutoSupremumQuality(loginHalfScreen=")),
-            ).mapNotNull { classLoader.loadClassOrNull(it.name) }.firstOrNull()
-        }.getOrNull()
 
-        val autoSupremumCtor = autoSupremumQualityClass?.declaredConstructors?.firstOrNull { ctor ->
-            ctor.parameterTypes.size == 6 && ctor.parameterTypes.all { it == Int::class.javaPrimitiveType }
-        }?.apply { isAccessible = true }
-
-        // 2. QualityStrategyProvider selectQuality method
-        val buildStrategyMethod = runCatching {
-            currentBridge.findMethod(
-                FindMethod.create().matcher(MethodMatcher.create().usingStrings("Quality Strategy share:")),
-            ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }.firstOrNull()
-        }.getOrNull()
-
-        val providerClass = buildStrategyMethod?.declaringClass
-        val selectQualityMethod = providerClass?.declaredMethods?.firstOrNull { method ->
-            method.parameterCount == 3 &&
-                autoSupremumQualityClass != null &&
-                method.parameterTypes[0] == autoSupremumQualityClass &&
-                method.parameterTypes[1] == Boolean::class.javaPrimitiveType &&
-                method.parameterTypes[2] == Boolean::class.javaPrimitiveType
-        }?.apply { isAccessible = true }
-
-        // 3. PlayerPreloadHolder (PreloadData(type=)
+        // 1. PlayerPreloadHolder (PreloadData(type=)
         val preloadMethods = runCatching {
             val preloadClass = currentBridge.findClass(
                 FindClass.create().matcher(ClassMatcher.create().usingStrings("PreloadData(type=")),
@@ -990,17 +1050,11 @@ object BiliSymbolResolver {
             }?.onEach { it.isAccessible = true }.orEmpty()
         }.getOrElse { emptyList() }
 
-        // 4. PlayerQualityService (player.unite_login_qn)
-        val qualityServiceMethods = runCatching {
-            currentBridge.findMethod(
-                FindMethod.create().matcher(MethodMatcher.create().usingStrings("player.unite_login_qn")),
-            ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }
-                .onEach { it.isAccessible = true }
-        }.getOrElse { emptyList() }
-
-        // 5. PlayerSettingHelper (quality settings:)
+        // 2. PlayerSettingHelper (quality settings:)
         val defaultQnMethod = runCatching {
-            currentBridge.findMethod(
+            classLoader.loadClassOrNull("tz1.h")?.declaredMethods?.singleOrNull {
+                Modifier.isStatic(it.modifiers) && it.parameterCount == 0 && it.returnType == Int::class.javaPrimitiveType
+            }?.apply { isAccessible = true } ?: currentBridge.findMethod(
                 FindMethod.create().matcher(MethodMatcher.create().usingStrings("quality settings:").paramCount(0)),
             ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }
                 .filter { it.returnType == Int::class.javaPrimitiveType || it.returnType == Int::class.javaObjectType }
@@ -1022,17 +1076,14 @@ object BiliSymbolResolver {
         }.getOrNull()
 
         val symbols = VideoQualitySymbols(
-            autoSupremumQualityConstructor = autoSupremumCtor?.let(ConstructorDescriptor::of),
-            qualityStrategySelectMethod = selectQualityMethod?.let(MethodDescriptor::of),
             playerPreloadGetMethods = preloadMethods.map(MethodDescriptor::of),
-            playerQualityServiceMethods = qualityServiceMethods.map(MethodDescriptor::of),
             playerSettingHelperGetDefaultQnMethod = defaultQnMethod?.let(MethodDescriptor::of),
             rangeQualityUpdateMethod = rangeUpdateMethod?.let(MethodDescriptor::of),
-            evidence = "autoSupremum=${autoSupremumCtor != null},strategy=${selectQualityMethod != null},preload=${preloadMethods.size},service=${qualityServiceMethods.size},setting=${defaultQnMethod != null},range=${rangeUpdateMethod != null}",
+            evidence = "preload=${preloadMethods.size},setting=${defaultQnMethod != null},range=${rangeUpdateMethod != null}",
         )
 
-        return if (autoSupremumCtor != null || selectQualityMethod != null || preloadMethods.isNotEmpty() || qualityServiceMethods.isNotEmpty() || defaultQnMethod != null || rangeUpdateMethod != null) {
-            SymbolScanResult.Found(symbols, autoSupremumQualityClass?.name ?: "VideoQuality", symbols.evidence)
+        return if (preloadMethods.isNotEmpty() || defaultQnMethod != null || rangeUpdateMethod != null) {
+            SymbolScanResult.Found(symbols, "VideoQuality", symbols.evidence)
         } else {
             SymbolScanResult.Missing("video quality hook points not found")
         }
@@ -1057,14 +1108,7 @@ object BiliSymbolResolver {
 
         // 皮肤响应模型:含 setUserGarb / setLoadEquip setter,
         // load_equip(下拉动画)与 user_equip 一起在解析 /x/resource/show/skin 时注入
-        val skinResponseClass = runCatching {
-            currentBridge.findClass(
-                FindClass.create().matcher(ClassMatcher.create().usingStrings("user_equip")),
-            ).mapNotNull { classLoader.loadClassOrNull(it.name) }
-                .firstOrNull { type ->
-                    type.declaredMethods.any { it.name == "setUserGarb" && it.parameterCount == 1 }
-                }
-        }.getOrNull()
+        val skinResponseClass = findSkinResponseClass(classLoader, currentBridge)
         val skinResponseUserGarbSetter = skinResponseClass?.declaredMethods?.firstOrNull {
             it.name == "setUserGarb" && it.parameterCount == 1
         }?.apply { isAccessible = true }
@@ -1163,38 +1207,61 @@ object BiliSymbolResolver {
         val skinClass = classLoader.loadClassOrNull(BILI_SKIN)
             ?: return SymbolScanResult.Missing("BiliSkin not found")
 
-        val colorArrayMethod = currentBridge.findMethod(
+        // 9.15 起 theme_entries_last_key 只出现在同类的读写方法里,颜色表 getter 本身不再引用它,
+        // 因此先按字符串定位 helper 类,再找与静态 SparseArray 同名的 (Context)int getter
+        val themeHelperCandidates = currentBridge.findMethod(
             FindMethod.create().matcher(MethodMatcher.create().usingStrings("theme_entries_last_key")),
-        ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }
-            .firstOrNull {
-                it.parameterTypes.contentEquals(arrayOf(Context::class.java)) &&
-                    it.returnType == Int::class.javaPrimitiveType
-            }
-            ?: return SymbolScanResult.Missing("theme color array method not found")
-        val themeHelperClass = colorArrayMethod.declaringClass
-        val colorArrayField = themeHelperClass.declaredFields.firstOrNull {
-            it.name == colorArrayMethod.name && it.type == SparseArray::class.java && Modifier.isStatic(it.modifiers)
-        }?.apply { isAccessible = true }
-            ?: return SymbolScanResult.Missing("theme color SparseArray not found")
+        ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull()?.declaringClass }
+            .distinctBy { it.name }
+        val (themeHelperClass, colorArrayField) = themeHelperCandidates.firstNotNullOfOrNull { type ->
+            type.declaredMethods.asSequence()
+                .filter {
+                    Modifier.isStatic(it.modifiers) &&
+                        it.parameterTypes.contentEquals(arrayOf(Context::class.java)) &&
+                        it.returnType == Int::class.javaPrimitiveType
+                }
+                .firstNotNullOfOrNull { method ->
+                    type.declaredFields.firstOrNull {
+                        it.name == method.name && it.type == SparseArray::class.java && Modifier.isStatic(it.modifiers)
+                    }
+                }
+                ?.apply { isAccessible = true }
+                ?.let { type to it }
+        } ?: return SymbolScanResult.Missing("theme color SparseArray not found: helpers=${themeHelperCandidates.size}")
 
         val themeColorsClass = currentBridge.findClass(
             FindClass.create().matcher(ClassMatcher.create().usingStrings("GarbThemeColors(garb=")),
         ).mapNotNull { classLoader.loadClassOrNull(it.name) }
             .firstOrNull { type -> type.declaredConstructors.any { Modifier.isPrivate(it.modifiers) } }
 
+        // 新版只剩 (BiliSkinList) 一个参数,旧版带 (BiliSkinList, boolean)
         val skinListMethod = themeStoreActivity.declaredMethods.firstOrNull {
-            it.parameterTypes.size == 2 &&
-                it.parameterTypes[0] == skinListClass &&
-                it.parameterTypes[1] == Boolean::class.javaPrimitiveType
+            it.parameterTypes.firstOrNull() == skinListClass &&
+                (
+                    it.parameterTypes.size == 1 ||
+                        (it.parameterTypes.size == 2 && it.parameterTypes[1] == Boolean::class.javaPrimitiveType)
+                    )
         }?.apply { isAccessible = true }
             ?: return SymbolScanResult.Missing("theme skin list method not found")
 
-        val themeProcessorClass = findClassNamesByNameContains(bridge, listOf("tv.danmaku.bili.ui.theme"))
+        // 主题处理器已移到混淆包(与颜色表 helper 同包),一并搜索
+        val themeProcessorPackages = listOf("tv.danmaku.bili.ui.theme", "${themeHelperClass.name.substringBeforeLast('.')}.")
+        val themeProcessorClass = findClassNamesByNameContains(bridge, themeProcessorPackages)
             .mapNotNull(classLoader::loadClassOrNull)
             .firstOrNull { type -> type.declaredFields.count { it.type == skinListClass } > 1 }
             ?: return SymbolScanResult.Missing("theme processor class not found")
-        val themeResetMethods = themeProcessorClass.declaredMethods.filter {
-            it.parameterCount == 0 && it.modifiers == 0
+        val themeResetMethods = findDeclaredMethods(bridge, classLoader) {
+            matcher(
+                MethodMatcher.create()
+                    .declaredClass(themeProcessorClass)
+                    .paramCount(0)
+                    .returnType(Void.TYPE)
+                    .usingStrings(THEME_DEFAULT_LIST_FILE),
+            )
+        }.ifEmpty {
+            themeProcessorClass.declaredMethods.filter {
+                it.parameterCount == 0 && it.modifiers == 0
+            }
         }.onEach { it.isAccessible = true }
         if (themeResetMethods.isEmpty()) {
             return SymbolScanResult.Missing("theme reset methods not found")
@@ -1221,14 +1288,7 @@ object BiliSymbolResolver {
 
         // Mirror BiliRoamingX's response replacement at Bilibili's parsed model boundary.
         // This narrows the hook to skin data instead of intercepting every OkHttp response.
-        val skinResponseClass = runCatching {
-            currentBridge.findClass(
-                FindClass.create().matcher(ClassMatcher.create().usingStrings("user_equip")),
-            ).mapNotNull { classLoader.loadClassOrNull(it.name) }
-                .firstOrNull { type ->
-                    type.declaredMethods.any { it.name == "setUserGarb" && it.parameterCount == 1 }
-                }
-        }.getOrNull()
+        val skinResponseClass = findSkinResponseClass(classLoader, currentBridge)
         val skinResponseUserGarbSetter = skinResponseClass?.declaredMethods?.firstOrNull {
             it.name == "setUserGarb" && it.parameterCount == 1
         }?.apply { isAccessible = true }
@@ -1271,16 +1331,46 @@ object BiliSymbolResolver {
         ).map { it.name }.toList() + bridge.findClass(
             FindClass.create().matcher(ClassMatcher.create().usingStrings("white")),
         ).map { it.name }.toList()
-        return candidates.asSequence().distinct().mapNotNull(classLoader::loadClassOrNull)
-            .firstOrNull { type ->
+        val types = candidates.asSequence().distinct().mapNotNull(classLoader::loadClassOrNull)
+            .filter { type ->
                 type.declaredFields.any { Modifier.isStatic(it.modifiers) && it.type == Map::class.java }
             }
+            .toList()
+        // "white" 在新版命中多个颜色名映射(如 HtmlColors),按主题 id 映射内容挑出真正的主题名表
+        return types.firstOrNull { type ->
+            type.declaredFields.any { field ->
+                Modifier.isStatic(field.modifiers) && field.type == Map::class.java &&
+                    runCatching {
+                        field.isAccessible = true
+                        val map = field.get(null) as? Map<*, *>
+                        map?.get("white") == 8 && map["pink"] == 2
+                    }.getOrDefault(false)
+            }
+        } ?: types.firstOrNull()
     }
 
     private fun scanBlockUpdate(
         classLoader: ClassLoader,
         bridge: () -> DexKitBridge?,
     ): SymbolScanResult<BlockUpdateSymbols> {
+        val helperMethods = classLoader.loadClassOrNull("tv.danmaku.bili.update.api.UpdateHelper")?.declaredMethods
+            .orEmpty().filter { method ->
+                Modifier.isStatic(method.modifiers) && method.returnType == Void.TYPE && when (method.name) {
+                    "checkUpdateInStartup" -> method.parameterTypes.map { it.name } ==
+                        listOf("android.app.Activity", "tv.danmaku.bili.update.api.updater.IUpdater")
+                    "checkUpdateAndShowDialog" -> method.parameterTypes.map { it.name } ==
+                        listOf("android.content.Context", "tv.danmaku.bili.update.api.updater.IUpdater")
+                    "checkInternalUpdateFlag" -> method.parameterTypes.contentEquals(arrayOf(Context::class.java))
+                    else -> false
+                }
+            }.map(MethodDescriptor::of)
+        val direct = classLoader.loadClassOrNull("Bx1.c")?.declaredMethods?.singleOrNull {
+            it.isBlockUpdateCheckCandidate() && !it.isBridge && !it.isSynthetic
+        }
+        if (direct != null) {
+            val symbols = BlockUpdateSymbols(MethodDescriptor.of(direct), "verifiedNetworkOwner,helpers=${helperMethods.size}", helperMethods)
+            return SymbolScanResult.Found(symbols, "${direct.declaringClass.name}.${direct.name}", symbols.evidence)
+        }
         val currentBridge = bridge() ?: return SymbolScanResult.Missing("DexKitBridge unavailable")
         val searchErrors = ArrayList<String>()
         val signatureMethodData = runCatching {
@@ -1376,6 +1466,7 @@ object BiliSymbolResolver {
         }
         val symbols = BlockUpdateSymbols(
             checkMethod = MethodDescriptor.of(method),
+            helperMethods = helperMethods,
             evidence = "${method.declaringClass.name}.${method.name}," +
                 "signature=${signatureMethodData.size},string=${stringMethodData.size}," +
                 "stringHit=${method.toGenericString() in stringCandidateKeys}",
@@ -1430,8 +1521,9 @@ object BiliSymbolResolver {
         val restoreErrors = ArrayList<String>()
         // The reader lives in a synthetic kotlin Function0 whose zero-arg invoke() maps the
         // "sp_play_speed_experiment" preference int onto LongPressSpeedExperiment. The other match
-        // is the A/B writer (invokeSuspend, 1 parameter), which we exclude by shape.
-        val candidates = methodData
+        // is the A/B writer (invokeSuspend, 1 parameter), which we exclude by shape. Since 9.17
+        // playerbizcommonv2 and playerbizcommon3 each ship their own reader, so keep all of them.
+        val readers = methodData
             .mapNotNull { data ->
                 runCatching { data.getMethodInstance(classLoader) }.getOrElse { throwable ->
                     restoreErrors += "${data.descriptor}: ${throwable.scanMessage()}"
@@ -1441,15 +1533,10 @@ object BiliSymbolResolver {
             .filter { it.name == "invoke" && it.parameterCount == 0 && it.returnType == Any::class.java }
             .distinctBy(Method::toGenericString)
             .toList()
-        val reader = when {
-            candidates.size == 1 -> candidates.single()
-            candidates.isEmpty() -> return SymbolScanResult.Missing(
+        if (readers.isEmpty()) {
+            return SymbolScanResult.Missing(
                 "play speed experiment reader not found: strings=${methodData.size}" +
                     (restoreErrors.take(2).joinToString("; ").takeIf { it.isNotBlank() }?.let { ",restore=$it" } ?: ""),
-            )
-            else -> return SymbolScanResult.Missing(
-                "play speed experiment reader ambiguous: candidates=${candidates.size}," +
-                    candidates.joinToString(limit = 4) { it.declaringClass.name },
             )
         }
         val qualityResetCandidates = qualityResetData
@@ -1497,11 +1584,11 @@ object BiliSymbolResolver {
             ?.singleOrNull()
             ?.apply { isAccessible = true }
         val symbols = TripleSpeedSymbols(
-            experimentReaderMethod = MethodDescriptor.of(reader),
+            experimentReaderMethods = readers.map(MethodDescriptor::of),
             qualitySpeedResetMethod = qualityReset?.let(MethodDescriptor::of),
             highFrameRateSpeedGuardMethod = highFrameRateSpeedGuard?.let(MethodDescriptor::of),
             longPressSpeedMethod = longPressSpeed?.let(MethodDescriptor::of),
-            evidence = "${reader.declaringClass.name}.${reader.name},strings=${methodData.size}," +
+            evidence = "readers=${readers.joinToString("|") { it.declaringClass.name }},strings=${methodData.size}," +
                 "qualityReset=${qualityReset?.let { "${it.declaringClass.name}.${it.name}" } ?: "missing"}," +
                 "qualityStrings=${qualityResetData.size}," +
                 "highFrameGuard=${highFrameRateSpeedGuard?.let { "${it.declaringClass.name}.${it.name}" } ?: "missing"}," +
@@ -1607,40 +1694,6 @@ object BiliSymbolResolver {
             listeners,
             listeners.joinToString("|") { it.className },
             "dexkitClassName+TextViewCtor+onClick+TextViewField",
-        )
-    }
-
-    private fun scanDownloadThreadReportMethod(
-        classLoader: ClassLoader,
-        bridge: () -> DexKitBridge?,
-    ): SymbolScanResult<MethodDescriptor> {
-        val classNames = findClassNamesByNameContains(
-            bridge = bridge,
-            terms = DOWNLOAD_THREAD_REPORT_CLASS_TERMS,
-        )
-        val methods = classNames
-            .asSequence()
-            .mapNotNull { classLoader.loadClassOrNull(it) }
-            .distinctBy { it.name }
-            .flatMap { type -> type.allMethods() }
-            .filter { method ->
-                method.name == "reportDownloadThread" &&
-                    method.parameterCount == 2 &&
-                    method.parameterTypes[0].name == "android.content.Context" &&
-                    method.parameterTypes[1] == Int::class.javaPrimitiveType &&
-                    !method.returnType.isPrimitive &&
-                    CharSequence::class.java.isAssignableFrom(method.returnType)
-            }
-            .distinctBy { it.declaringClass.name + "#" + it.name + it.parameterTypes.joinToString { type -> type.name } }
-            .toList()
-
-        if (methods.size != 1) {
-            return SymbolScanResult.Missing("reportDownloadThread method candidates=${methods.size}")
-        }
-        return SymbolScanResult.Found(
-            MethodDescriptor.of(methods.single()),
-            methods.single().toGenericString(),
-            "dexkitClassName+exactSignature",
         )
     }
 
@@ -1901,6 +1954,7 @@ object BiliSymbolResolver {
 
     private fun scanStoryDanmaku(
         classLoader: ClassLoader,
+        bridge: () -> DexKitBridge? = { null },
     ): SymbolScanResult<StoryDanmakuSymbols> {
         val storyDetail = classLoader.loadClassOrNull(STORY_DETAIL)
             ?: return SymbolScanResult.Missing("story detail class not found")
@@ -1908,108 +1962,164 @@ object BiliSymbolResolver {
             ?: return SymbolScanResult.Missing("story pager player class not found")
         val interactLayerService = classLoader.loadClassOrNull(INTERACT_LAYER_SERVICE)
             ?: return SymbolScanResult.Missing("interact layer service class not found")
-        val introCommentService = classLoader.loadClassOrNull(STORY_INTRO_COMMENT_SERVICE)
+        val introCommentService = STORY_INTRO_COMMENT_SERVICES
+            .mapNotNull { classLoader.loadClassOrNull(it) }
+            .firstOrNull { it.findStoryIntroCommentShow() != null }
 
-        var matchedSignature: Array<Class<*>>? = null
-        var matchedVerticalContainer: Class<*>? = null
-        var matchedLandscapeContainer: Class<*>? = null
+        fun isStoryCommentShowMethod(method: Method): Boolean {
+            val params = method.parameterTypes
+            return method.returnType == Void.TYPE &&
+                params.size in 6..10 &&
+                params[0] == storyDetail &&
+                params.getOrNull(2) == Long::class.javaPrimitiveType &&
+                params.getOrNull(3) == Long::class.javaPrimitiveType &&
+                params.getOrNull(4) == String::class.java
+        }
 
-        for (name in STORY_COMMENT_OUTER_CANDIDATES) {
-            val prefix = "com.bilibili.video.story.action.$name"
-            val outerClass = classLoader.loadClassOrNull(prefix)
-            val interfaceCandidates = buildList {
-                for (suffix in listOf("b", "c", "d", "a", "e", "f")) {
-                    classLoader.loadClassOrNull("$prefix\$$suffix")?.let(::add)
+        fun isStoryCommentHideMethod(method: Method, showMethodName: String? = null): Boolean {
+            return (showMethodName == null || method.name != showMethodName) &&
+                method.parameterCount == 0 &&
+                (method.returnType == Void.TYPE || method.returnType == Boolean::class.javaPrimitiveType)
+        }
+
+        val showMethods = ArrayList<Method>()
+        val hideMethods = ArrayList<Method>()
+
+        // 1. DexKit-based resolution (fast & version-independent)
+        val currentBridge = bridge()
+        if (currentBridge != null) {
+            runCatching {
+                val candidateMethods = currentBridge.findMethod(
+                    FindMethod.create()
+                        .searchPackages("com.bilibili.video.story")
+                        .matcher(MethodMatcher.create().returnType("void"))
+                ).mapNotNull { runCatching { it.getMethodInstance(classLoader) }.getOrNull() }
+                    .filter { isStoryCommentShowMethod(it) }
+
+                val ifaceMethod = candidateMethods.firstOrNull { it.declaringClass.isInterface }
+                val ifaceHideName = ifaceMethod?.declaringClass?.allMethods()
+                    ?.firstOrNull { isStoryCommentHideMethod(it, ifaceMethod.name) }?.name
+
+                val targetClasses = candidateMethods
+                    .filter { !it.declaringClass.isInterface && !Modifier.isAbstract(it.declaringClass.modifiers) }
+                    .map { it.declaringClass }
+                    .toMutableSet()
+
+                if (ifaceMethod != null) {
+                    val ifaceName = ifaceMethod.declaringClass.name
+                    currentBridge.findClass(
+                        FindClass.create().matcher(ClassMatcher.create().addInterface(ifaceName))
+                    ).forEach { classData ->
+                        classLoader.loadClassOrNull(classData.name)?.let { cls ->
+                            if (!cls.isInterface && !Modifier.isAbstract(cls.modifiers)) {
+                                targetClasses.add(cls)
+                            }
+                        }
+                    }
                 }
-                outerClass?.declaredClasses?.filterTo(this) { it.isInterface }
-            }.distinct()
 
-            var containerInterface: Class<*>? = null
-            var sig: Array<Class<*>>? = null
-            for (iface in interfaceCandidates) {
-                val candidateSig = iface.allMethods().firstOrNull { method ->
-                    method.name == "a" &&
-                        method.returnType == Void.TYPE &&
-                        method.parameterCount == 8 &&
-                        method.parameterTypes[0] == storyDetail &&
-                        method.parameterTypes[2] == Long::class.javaPrimitiveType &&
-                        method.parameterTypes[3] == Long::class.javaPrimitiveType &&
-                        method.parameterTypes[4] == String::class.java
-                }?.parameterTypes
-                if (candidateSig != null) {
-                    containerInterface = iface
-                    sig = candidateSig
-                    break
+                for (cls in targetClasses) {
+                    val showM = cls.allMethods().firstOrNull { isStoryCommentShowMethod(it) } ?: continue
+                    val hideM = (ifaceHideName?.let { cls.findMethod(it, Void.TYPE) ?: cls.findMethod(it, Boolean::class.javaPrimitiveType!!) })
+                        ?: cls.allMethods().firstOrNull { isStoryCommentHideMethod(it, showM.name) }
+                    if (hideM != null) {
+                        showMethods.add(showM.apply { isAccessible = true })
+                        hideMethods.add(hideM.apply { isAccessible = true })
+                    }
                 }
             }
-            if (sig == null || containerInterface == null) continue
+        }
 
-            matchedSignature = sig
-            val implCandidates = buildList {
-                listOf("VerticalContainerV2", "VerticalContainer", "LandscapeContainer", "f", "g", "d", "e").forEach { suffix ->
-                    classLoader.loadClassOrNull("$prefix\$$suffix")?.let(::add)
+        // 2. Pure reflection fallback if DexKit unavailable or found nothing
+        if (showMethods.isEmpty() || hideMethods.isEmpty()) {
+            showMethods.clear()
+            hideMethods.clear()
+
+            val packagePrefixes = listOf(
+                "com.bilibili.video.story.action",
+                "com.bilibili.video.story.action.widget.comment",
+                "com.bilibili.video.story.comment",
+            )
+            val outerNames = listOf("StoryCommentHelper", "C", "B", "A") +
+                ('a'..'z').map { it.toString() } +
+                ('D'..'Z').map { it.toString() }
+
+            searchLoop@ for (pkg in packagePrefixes) {
+                for (name in outerNames) {
+                    val prefix = "$pkg.$name"
+                    val outerClass = classLoader.loadClassOrNull(prefix) ?: continue
+
+                    val interfaceCandidates = buildList {
+                        for (suffix in listOf("b", "c", "d", "a", "e", "f", "h", "g", "i")) {
+                            classLoader.loadClassOrNull("$prefix\$$suffix")?.let(::add)
+                        }
+                        outerClass.declaredClasses.filterTo(this) { it.isInterface }
+                    }.distinct()
+
+                    var containerInterface: Class<*>? = null
+                    var ifaceShow: Method? = null
+                    for (iface in interfaceCandidates) {
+                        val showCandidate = iface.allMethods().firstOrNull { isStoryCommentShowMethod(it) }
+                        if (showCandidate != null) {
+                            containerInterface = iface
+                            ifaceShow = showCandidate
+                            break
+                        }
+                    }
+
+                    if (containerInterface == null || ifaceShow == null) continue
+
+                    val ifaceHideName = containerInterface.allMethods()
+                        .firstOrNull { isStoryCommentHideMethod(it, ifaceShow.name) }?.name
+
+                    val concreteImplementors = buildList {
+                        listOf("VerticalContainerV2", "VerticalContainer", "LandscapeContainer", "f", "g", "d", "e", "h", "i", "c", "b").forEach { suffix ->
+                            classLoader.loadClassOrNull("$prefix\$$suffix")?.let(::add)
+                        }
+                        outerClass.declaredClasses.forEach(::add)
+                    }.distinct().filter { cls ->
+                        !cls.isInterface && !Modifier.isAbstract(cls.modifiers) && (
+                            containerInterface.isAssignableFrom(cls) ||
+                                cls.allMethods().any { isStoryCommentShowMethod(it) }
+                        )
+                    }
+
+                    for (cls in concreteImplementors) {
+                        val showM = cls.allMethods().firstOrNull { isStoryCommentShowMethod(it) } ?: continue
+                        val hideM = (ifaceHideName?.let { cls.findMethod(it, Void.TYPE) ?: cls.findMethod(it, Boolean::class.javaPrimitiveType!!) })
+                            ?: cls.allMethods().firstOrNull { isStoryCommentHideMethod(it, showM.name) }
+                        if (hideM != null) {
+                            showMethods.add(showM.apply { isAccessible = true })
+                            hideMethods.add(hideM.apply { isAccessible = true })
+                        }
+                    }
+
+                    if (showMethods.isNotEmpty() && hideMethods.isNotEmpty()) {
+                        break@searchLoop
+                    }
                 }
-                outerClass?.declaredClasses?.filterTo(this) {
-                    !it.isInterface && containerInterface.isAssignableFrom(it)
-                }
-            }.distinct()
-
-            matchedVerticalContainer = implCandidates.firstOrNull { cls ->
-                cls.name.contains("VerticalContainer") ||
-                    cls.name.endsWith("\$f") ||
-                    cls.name.endsWith("\$g") ||
-                    cls.allFields().any { it.type.name.contains("StoryCommentConstraintLayout") }
-            } ?: classLoader.loadClassOrNull("$prefix\$VerticalContainerV2")
-                ?: classLoader.loadClassOrNull("$prefix\$f")
-                ?: classLoader.loadClassOrNull("$prefix\$g")
-
-            matchedLandscapeContainer = implCandidates.firstOrNull { cls ->
-                cls != matchedVerticalContainer && (
-                    cls.name.contains("LandscapeContainer") ||
-                        cls.name.endsWith("\$d") ||
-                        cls.name.endsWith("\$e")
-                )
-            } ?: classLoader.loadClassOrNull("$prefix\$LandscapeContainer")
-                ?: classLoader.loadClassOrNull("$prefix\$d")
-                ?: classLoader.loadClassOrNull("$prefix\$e")
-
-            break
+            }
         }
 
-        val showSignature = matchedSignature ?: return SymbolScanResult.Missing("story comment show signature not found")
-        val verticalContainer = matchedVerticalContainer
-            ?: STORY_COMMENT_VERTICAL_CONTAINER_CLASSES.firstNotNullOfOrNull(classLoader::loadClassOrNull)
-            ?: return SymbolScanResult.Missing("story vertical comment container class not found")
-        val landscapeContainer = matchedLandscapeContainer
-            ?: STORY_COMMENT_LANDSCAPE_CONTAINER_CLASSES.firstNotNullOfOrNull(classLoader::loadClassOrNull)
-
-        val showMethods = buildList {
-            verticalContainer.findMethod("a", Void.TYPE, *showSignature)
-                ?.apply { isAccessible = true }
-                ?.let(::add)
-            landscapeContainer?.findMethod("a", Void.TYPE, *showSignature)
-                ?.apply { isAccessible = true }
-                ?.let(::add)
-        }
-        val hideMethods = buildList {
-            verticalContainer.findMethod("c", Void.TYPE)
-                ?.apply { isAccessible = true }
-                ?.let(::add)
-            landscapeContainer?.findMethod("c", Void.TYPE)
-                ?.apply { isAccessible = true }
-                ?.let(::add)
-        }
-        val introCommentShow = introCommentService
-            ?.allMethods()
+        val introCommentShow = introCommentService?.findStoryIntroCommentShow()
+            ?.apply { isAccessible = true }
+        // dismissSheet() returns Boolean since 9.15; older builds return Unit.
+        val introCommentDismiss = introCommentService?.allMethods()
             ?.singleOrNull { method ->
-                method.name == "b" &&
-                    method.returnType == Void.TYPE &&
-                    method.parameterCount == 1 &&
-                    method.parameterTypes[0].name.startsWith(STORY_TAB_PACKAGE_PREFIX)
+                method.name == "a" &&
+                    method.parameterCount == 0 &&
+                    (method.returnType == Void.TYPE || method.returnType == Boolean::class.javaPrimitiveType)
             }
             ?.apply { isAccessible = true }
-        val introCommentDismiss = introCommentService?.findMethod("a", Void.TYPE)
-            ?.apply { isAccessible = true }
+
+        // Fallback to intro comment show/dismiss if normal show/hide are still empty
+        if (showMethods.isEmpty() && introCommentShow != null) {
+            showMethods.add(introCommentShow)
+        }
+        if (hideMethods.isEmpty() && introCommentDismiss != null) {
+            hideMethods.add(introCommentDismiss)
+        }
+
         val setDanmakuOpacity = interactLayerService.findMethod(
             "setDanmakuOpacity",
             Void.TYPE,
@@ -2023,28 +2133,31 @@ object BiliSymbolResolver {
         }.toList()
         val updateCanvas = updateCanvasCandidates.singleOrNull()?.apply { isAccessible = true }
 
-        if (showMethods.isEmpty() || hideMethods.isEmpty() || setDanmakuOpacity == null || updateCanvas == null) {
+        val distinctShow = showMethods.distinctBy(Method::toGenericString)
+        val distinctHide = hideMethods.distinctBy(Method::toGenericString)
+
+        if (distinctShow.isEmpty() || distinctHide.isEmpty() || setDanmakuOpacity == null || updateCanvas == null) {
             return SymbolScanResult.Missing(
                 "story danmaku hook points not found: " +
-                    "show=${showMethods.size},hide=${hideMethods.size}," +
+                    "show=${distinctShow.size},hide=${distinctHide.size}," +
                     "setOpacity=${setDanmakuOpacity != null},updateCanvas=${updateCanvas != null}",
             )
         }
 
         val symbols = StoryDanmakuSymbols(
-            commentShowMethods = showMethods.map(MethodDescriptor::of),
-            commentHideMethods = hideMethods.map(MethodDescriptor::of),
+            commentShowMethods = distinctShow.map(MethodDescriptor::of),
+            commentHideMethods = distinctHide.map(MethodDescriptor::of),
             introCommentShowMethod = introCommentShow?.let(MethodDescriptor::of),
             introCommentDismissMethod = introCommentDismiss?.let(MethodDescriptor::of),
             setDanmakuOpacity = MethodDescriptor.of(setDanmakuOpacity),
             updateCanvas = MethodDescriptor.of(updateCanvas),
-            evidence = "show=${showMethods.size},hide=${hideMethods.size}," +
+            evidence = "show=${distinctShow.size},hide=${distinctHide.size}," +
                 "introShow=${introCommentShow != null},introDismiss=${introCommentDismiss != null}," +
                 "setOpacity=true,updateCanvas=true",
         )
         val hookPoints = listOf(
-            childHookPoint(HP_STORY_DANMAKU_COMMENT_SHOW, showMethods.isNotEmpty(), "comment show method not found", "methods=${showMethods.size}"),
-            childHookPoint(HP_STORY_DANMAKU_COMMENT_HIDE, hideMethods.isNotEmpty(), "comment hide method not found", "methods=${hideMethods.size}"),
+            childHookPoint(HP_STORY_DANMAKU_COMMENT_SHOW, distinctShow.isNotEmpty(), "comment show method not found", "methods=${distinctShow.size}"),
+            childHookPoint(HP_STORY_DANMAKU_COMMENT_HIDE, distinctHide.isNotEmpty(), "comment hide method not found", "methods=${distinctHide.size}"),
             optionalChildHookPoint(
                 HP_STORY_DANMAKU_INTRO_COMMENT_SHOW,
                 introCommentShow != null,
@@ -2162,6 +2275,14 @@ object BiliSymbolResolver {
             hookPoints,
         )
     }
+
+    private fun Class<*>.findStoryIntroCommentShow(): Method? =
+        allMethods().singleOrNull { method ->
+            method.name == "b" &&
+                method.returnType == Void.TYPE &&
+                method.parameterCount == 1 &&
+                method.parameterTypes[0].name.startsWith(STORY_TAB_PACKAGE_PREFIX)
+        }
 
     private fun isStoryPagerListMethod(method: Method): Boolean =
         method.returnType == Void.TYPE &&
@@ -2433,6 +2554,12 @@ object BiliSymbolResolver {
             it.name == "b" &&
                 it.parameterTypes.contentEquals(arrayOf(Menu::class.java, MenuInflater::class.java))
         }?.apply { isAccessible = true }
+        val composeGameMenuMethod = classLoader.loadClassOrNull(
+            "tv.danmaku.bili.home.components.topbar.TopRightComponent\$initTopRight\$1\$1",
+        )?.declaredMethods?.singleOrNull {
+            !Modifier.isStatic(it.modifiers) && it.name == "invoke" && it.returnType == Any::class.java &&
+                it.parameterTypes.map { type -> type.name } == listOf("java.util.List", "kotlin.coroutines.Continuation")
+        }?.apply { isAccessible = true }
 
         val baseFragmentClass = HOME_BASE_MAIN_FRAME_FRAGMENTS.firstNotNullOfOrNull(classLoader::loadClassOrNull)
         val baseOnViewCreated = baseFragmentClass?.declaredMethods?.firstOrNull {
@@ -2457,17 +2584,19 @@ object BiliSymbolResolver {
             emptyList()
         }
 
-        if (gameMenuMethod == null && baseOnViewCreated == null && defaultWordMethods.isEmpty()) {
+        if (gameMenuMethod == null && composeGameMenuMethod == null && baseOnViewCreated == null && defaultWordMethods.isEmpty()) {
             return SymbolScanResult.Missing("home top bar hook points not found")
         }
         val symbols = HomeTopBarSymbols(
             gameMenuMethod = gameMenuMethod?.let(MethodDescriptor::of),
+            composeGameMenuMethod = composeGameMenuMethod?.let(MethodDescriptor::of),
             baseOnViewCreated = baseOnViewCreated?.let(MethodDescriptor::of),
             defaultWordMethods = defaultWordMethods.map(MethodDescriptor::of),
-            evidence = "game=${gameMenuMethod != null},onViewCreated=${baseOnViewCreated != null},defaultWord=${defaultWordMethods.size}",
+            evidence = "game=${gameMenuMethod != null},compose=${composeGameMenuMethod != null},onViewCreated=${baseOnViewCreated != null},defaultWord=${defaultWordMethods.size}",
         )
         val hookPoints = listOf(
             childHookPoint(HP_HOME_TOP_BAR_GAME, gameMenuMethod != null, "game menu method not found"),
+            optionalChildHookPoint(HP_HOME_TOP_BAR_COMPOSE_GAME, composeGameMenuMethod != null, "Compose game menu method not found"),
             childHookPoint(HP_HOME_TOP_BAR_VIEW_CREATED, baseOnViewCreated != null, "base onViewCreated method not found"),
             childHookPoint(
                 HP_HOME_TOP_BAR_DEFAULT_WORD,
@@ -2625,12 +2754,16 @@ object BiliSymbolResolver {
         }.distinctBy { it.getItems.declaringClassName + "#" + it.getItems.name }
 
         val detailRelateServiceClass = classLoader.loadClassOrNull(DETAIL_RELATE_SERVICE_CLASS)
-        val detailRelateServiceMethod = detailRelateServiceClass?.allMethods()?.firstOrNull { method ->
+        // 9.17 起同类还有多个接收卡片模型的方法(返回 ExtraParams / void),只有返回组件的才是卡片创建入口
+        val detailRelateServiceCandidates = detailRelateServiceClass?.allMethods()?.filter { method ->
             !Modifier.isStatic(method.modifiers) &&
                 !Modifier.isAbstract(method.modifiers) &&
                 method.parameterCount == 1 &&
                 (method.name == "d" || method.parameterTypes[0].name.endsWith("D0") || method.returnType.name.contains("RunningUIComponent"))
-        }
+        }?.toList().orEmpty()
+        val detailRelateServiceMethod = detailRelateServiceCandidates.firstOrNull { it.returnType.name.contains("RunningUIComponent") }
+            ?: detailRelateServiceCandidates.firstOrNull { it.name == "d" }
+            ?: detailRelateServiceCandidates.firstOrNull()
 
         if (responseGetItems.isEmpty() && detailRelateServiceMethod == null) {
             return SymbolScanResult.Missing("VideoDetailRelate response and service methods not found")
@@ -2990,7 +3123,7 @@ object BiliSymbolResolver {
                     method.returnType == Void.TYPE &&
                         method.parameterCount >= 1 &&
                         !method.name.contains("lambda", ignoreCase = true) &&
-                        method.name in FOLLOW_WIDGET_METHOD_NAMES
+                        (method.name in FOLLOW_WIDGET_METHOD_NAMES || method.isFollowWidgetBindOverride(type))
                 }
             }
             .distinctBy(Method::toGenericString)
@@ -3014,12 +3147,7 @@ object BiliSymbolResolver {
         val searchUrlsMethod = COMMENT_CONTENT_CLASSES
             .asSequence()
             .mapNotNull { classLoader.loadClassOrNull(it) }
-            .mapNotNull { type ->
-                type.allMethods().firstOrNull { method ->
-                    method.name == "getUrlsMap" && method.parameterCount == 0 &&
-                        !Modifier.isStatic(method.modifiers) && method.returnType == Map::class.java
-                }
-            }
+            .mapNotNull { it.allMethods().firstOrNull { method -> method.name == "internalGetUrls" && method.parameterCount == 0 } }
             .firstOrNull()
 
         val emptyPageHooks = scanVideoCommentEmptyPageHooks(classLoader)
@@ -3069,6 +3197,13 @@ object BiliSymbolResolver {
         )
         return SymbolScanResult.Found(symbols, "VideoComment", symbols.evidence, hookPoints)
     }
+
+    // 关注按钮的绑定入口是它直接实现的单方法接口(9.15 为 r,9.17 为 g0),名称随混淆漂移
+    private fun Method.isFollowWidgetBindOverride(owner: Class<*>): Boolean =
+        parameterCount == 1 &&
+            owner.interfaces.any { iface ->
+                iface.declaredMethods.any { it.name == name && it.parameterTypes.contentEquals(parameterTypes) }
+            }
 
     private fun scanVideoCommentEmptyPageHooks(classLoader: ClassLoader): List<VideoCommentEmptyPageSymbols> {
         val subjectControl = COMMENT_SUBJECT_CONTROL_CLASSES.mapNotNull { classLoader.loadClassOrNull(it) }
@@ -3448,14 +3583,19 @@ object BiliSymbolResolver {
         }
         val geminiOperationWidget = addClass(CHRONOS_ID_GEMINI_OPERATION_WIDGET, GEMINI_OPERATION_WIDGET)
         geminiOperationWidget?.let { widget ->
-            addMethods(
-                CHRONOS_METHOD_GEMINI_OPERATION_RENDER,
+            val declared = widget.declaredMethods.filter {
+                it.name in GEMINI_OPERATION_RENDER_METHOD_NAMES &&
+                    it.parameterCount == 0 &&
+                    it.returnType == java.lang.Void.TYPE
+            }
+            val renderMethods = declared.ifEmpty {
                 widget.allMethods().filter {
                     it.name in GEMINI_OPERATION_RENDER_METHOD_NAMES &&
                         it.parameterCount == 0 &&
                         it.returnType == java.lang.Void.TYPE
-                },
-            )
+                }.take(1).toList()
+            }
+            addMethods(CHRONOS_METHOD_GEMINI_OPERATION_RENDER, renderMethods)
         }
         val geminiOperationObserver = addClass(CHRONOS_ID_GEMINI_OPERATION_OBSERVER, GEMINI_OPERATION_OBSERVER)
         geminiOperationObserver?.let { observer ->
@@ -4354,6 +4494,10 @@ object BiliSymbolResolver {
     private const val REWARD_MINI_GAME_ABILITY =
         "com.bilibili.lib.fasthybrid.game.engine.ability.impl.ad.BWARewardAbility"
     private val REWARD_JUMP_CLOCK_CLASSES = arrayOf("Ke.m", "Pe.k")
+    private const val GARB_DATA_CLASS = "tv.danmaku.bili.ui.garb.model.GarbData"
+    private const val REWARD_PACKAGE = "com.bilibili.ad.reward"
+    private const val REWARD_DISPLAY = "com.bilibili.ad.reward.RewardAdDisplay"
+    private const val REWARD_JUMP_REASON = "jump"
 
     private val TRY_FREE_NEED_TRIAL_CLASSES = arrayOf(
         "com.bapis.bilibili.pgc.gateway.player.v2.SceneControl",
@@ -4404,23 +4548,11 @@ object BiliSymbolResolver {
         "offline",
     )
 
-    private val DOWNLOAD_THREAD_REPORT_CLASS_TERMS = listOf(
-        "Download",
-        "download",
-        "Thread",
-        "thread",
-        "Report",
-        "report",
-        "Cache",
-        "cache",
-        "Offline",
-        "offline",
-    )
-
     private const val STORY_VIDEO_ACTIVITY = "com.bilibili.video.story.StoryVideoActivity"
     private const val THEME_STORE_ACTIVITY = "tv.danmaku.bili.ui.theme.ThemeStoreActivity"
     private const val BILI_SKIN_LIST = "tv.danmaku.bili.ui.theme.api.BiliSkinList"
     private const val BILI_SKIN = "tv.danmaku.bili.ui.theme.api.BiliSkin"
+    private const val THEME_DEFAULT_LIST_FILE = "theme2-default"
     private const val STORY_VIDEO_FRAGMENT = "com.bilibili.video.story.StoryVideoFragment"
     private const val STORY_PAGER_PLAYER = "com.bilibili.video.story.player.StoryPagerPlayer"
     private const val STORY_FEED_RESPONSE = "com.bilibili.video.story.api.StoryFeedResponse"
@@ -4432,7 +4564,10 @@ object BiliSymbolResolver {
     private val STORY_COMMENT_OUTER_CANDIDATES = listOf("StoryCommentHelper", "C", "B") + ('D'..'Z').map { it.toString() }
     private val STORY_COMMENT_VERTICAL_CONTAINER_CLASSES = (listOf("StoryCommentHelper\$VerticalContainerV2", "C\$f", "B\$f") + ('D'..'Z').map { "$it\$f" }).map { "com.bilibili.video.story.action.$it" }.toTypedArray()
     private val STORY_COMMENT_LANDSCAPE_CONTAINER_CLASSES = (listOf("StoryCommentHelper\$d", "C\$d", "B\$d") + ('D'..'Z').map { "$it\$d" }).map { "com.bilibili.video.story.action.$it" }.toTypedArray()
-    private const val STORY_INTRO_COMMENT_SERVICE = "com.bilibili.video.story.action.widget.comment.p"
+    // 混淆字母随版本漂移(9.15 为 t,9.17 为 w),已知名称优先,其余按结构逐个检查
+    private val STORY_INTRO_COMMENT_SERVICES = (listOf("w", "t", "p") + ('a'..'z').map { it.toString() })
+        .distinct()
+        .map { "com.bilibili.video.story.action.widget.comment.$it" }
     private const val STORY_TAB_PACKAGE_PREFIX = "com.bilibili.video.story.tab."
     private const val KOTLIN_UNIT = "kotlin.Unit"
     private const val ANDROIDX_VIEW_BINDING = "androidx.viewbinding.ViewBinding"

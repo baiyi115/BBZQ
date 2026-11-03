@@ -13,6 +13,8 @@ import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
 import java.lang.reflect.Modifier
+import java.util.Collections
+import java.util.concurrent.ConcurrentHashMap
 
 class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
@@ -34,11 +36,33 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
         var currentActiveArtUri: String? = null
         @Volatile
         var currentCoverMediaKey: String? = null
+        @Volatile
+        var lastUpdatedCoverUri: String? = null
+
+        fun resolveSessionTag(session: Any?): String? {
+            if (session == null) return null
+            return runCatching {
+                if (session is android.media.session.MediaSession) {
+                    return session.controller.tag
+                }
+                val getController = session.javaClass.methods.firstOrNull { it.name == "getController" && it.parameterCount == 0 }
+                val controller = getController?.invoke(session)
+                val getTag = controller?.javaClass?.methods?.firstOrNull { it.name == "getTag" && it.parameterCount == 0 }
+                getTag?.invoke(controller)?.toString()
+            }.getOrNull()
+        }
+
+        fun isLiveSession(session: Any?): Boolean {
+            val tag = resolveSessionTag(session)
+            return tag?.contains("live", ignoreCase = true) == true
+        }
 
         private val mainHandler = Handler(Looper.getMainLooper())
         private val coverFetchExecutor = java.util.concurrent.Executors.newFixedThreadPool(2)
 
-        fun createSafeCopy(src: Bitmap, maxDim: Int = 1080): Bitmap? {
+        private const val MAX_COVER_DIM = 720
+
+        fun createSafeCopy(src: Bitmap, maxDim: Int = MAX_COVER_DIM): Bitmap? {
             return runCatching {
                 if (src.isRecycled) return null
                 val w = src.width.coerceAtLeast(1)
@@ -60,6 +84,15 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
             }.getOrNull()
         }
 
+        fun isMatchingUri(url: String?, activeUri: String?): Boolean {
+            if (url.isNullOrBlank() || activeUri.isNullOrBlank()) return false
+            if (url == activeUri) return true
+            if (url.length >= 12 && activeUri.length >= 12) {
+                return activeUri.contains(url) || url.contains(activeUri)
+            }
+            return false
+        }
+
         fun updateCoverToSessions(
             targetMediaKey: String?,
             bitmap: Bitmap,
@@ -67,12 +100,20 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
         ) {
             if (bitmap.isRecycled) return
             val activeKey = currentActiveMediaKey
+            val activeUri = currentActiveArtUri
+            // If there is no active cover URI registered, do not bind arbitrary images
+            if (activeUri.isNullOrBlank()) return
             if (targetMediaKey != null && activeKey != null && targetMediaKey != activeKey) {
                 return
             }
+            if (activeUri == lastUpdatedCoverUri && lastValidCoverBitmap != null) {
+                return
+            }
+            if (bitmap === lastValidCoverBitmap) return
 
-            val safeCopy = createSafeCopy(bitmap, 1080) ?: return
+            val safeCopy = createSafeCopy(bitmap, MAX_COVER_DIM) ?: return
             lastValidCoverBitmap = safeCopy
+            lastUpdatedCoverUri = activeUri
             currentCoverMediaKey = targetMediaKey ?: activeKey
 
             mainHandler.post {
@@ -203,6 +244,7 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
         env.hookBefore(setMetadataMethod) { param ->
             if (!ModuleSettings.isFixMediaSessionCardEnabled(prefs)) return@hookBefore
             val session = param.thisObject
+            if (isLiveSession(session)) return@hookBefore
             if (session != null) {
                 activeCompatSessionRef = java.lang.ref.WeakReference(session)
             }
@@ -217,6 +259,9 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 return@hookBefore
             }
             val metadata = arg0
+
+            // If this is our own metadata object, avoid re-processing and re-copying
+            if (metadata === lastCompatMetadataObj) return@hookBefore
 
             val mediaKey = runCatching {
                 val getString = metadata.javaClass.getMethod("getString", String::class.java)
@@ -234,6 +279,11 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
             if (isNewMedia) {
                 currentActiveMediaKey = mediaKey
                 currentActiveArtUri = artUri
+                if (currentCoverMediaKey != mediaKey) {
+                    lastValidCoverBitmap = null
+                    currentCoverMediaKey = null
+                    lastUpdatedCoverUri = null
+                }
             }
 
             val coverBitmap = runCatching {
@@ -244,11 +294,13 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
             if (coverBitmap != null && !coverBitmap.isRecycled) {
                 currentCoverMediaKey = mediaKey
-                val safeCopy = createSafeCopy(coverBitmap, 1080) ?: coverBitmap
-                lastValidCoverBitmap = safeCopy
+                if (coverBitmap !== lastValidCoverBitmap) {
+                    val safeCopy = createSafeCopy(coverBitmap, MAX_COVER_DIM) ?: coverBitmap
+                    lastValidCoverBitmap = safeCopy
+                }
                 lastCompatMetadataObj = metadata
             } else {
-                val cached = lastValidCoverBitmap
+                val cached = if (mediaKey != null && mediaKey == currentCoverMediaKey) lastValidCoverBitmap else null
                 if (cached != null && !cached.isRecycled && builderClass != null) {
                     runCatching {
                         val constructor = builderClass.getConstructor(metadata.javaClass)
@@ -283,16 +335,18 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 env.hookBefore(fwkSetMetadata) { param ->
                     if (!ModuleSettings.isFixMediaSessionCardEnabled(prefs)) return@hookBefore
                     val fwkSession = param.thisObject as? android.media.session.MediaSession
+                    if (isLiveSession(fwkSession)) return@hookBefore
                     if (fwkSession != null) {
                         activeFwkSessionRef = java.lang.ref.WeakReference(fwkSession)
                     }
                     val meta = param.args.getOrNull(0) as? android.media.MediaMetadata ?: return@hookBefore
+                    if (meta === lastFwkMetadataObj) return@hookBefore
                     lastFwkMetadataObj = meta
 
                     val hasArt = meta.getBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART) != null ||
                             meta.getBitmap(android.media.MediaMetadata.METADATA_KEY_ART) != null
                     if (!hasArt) {
-                        val cached = lastValidCoverBitmap
+                        val cached = if (currentActiveMediaKey != null && currentActiveMediaKey == currentCoverMediaKey) lastValidCoverBitmap else null
                         if (cached != null && !cached.isRecycled) {
                             val builder = android.media.MediaMetadata.Builder(meta)
                             builder.putBitmap(android.media.MediaMetadata.METADATA_KEY_ALBUM_ART, cached)
@@ -315,14 +369,11 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
             ?: classLoader.findClassOrNull("androidx.media.MediaMetadataCompat\$Builder")
 
         // 1) 拦截封面具体回调类中的 onFetched(String, Bitmap, Bitmap)
-        val listenerImplClasses = listOfNotNull(
-            classLoader.findClassOrNull("Su0.a\$a"),
-            classLoader.findClassOrNull("tv.danmaku.bili.ui.player.notification.a\$b"),
-            classLoader.findClassOrNull("lI.a"),
-            classLoader.findClassOrNull("lI.c"),
-        )
-
-        for (clazz in listenerImplClasses) {
+        // FetchListener 的子类都是混淆名且随版本变化,除固定的 a$b 外,在 fetch() 传入时按实际类型补挂
+        val hookedListenerClasses = Collections.newSetFromMap(ConcurrentHashMap<Class<*>, Boolean>())
+        fun hookListenerClass(clazz: Class<*>): Int {
+            if (!hookedListenerClasses.add(clazz)) return 0
+            var hooked = 0
             for (method in clazz.declaredMethods) {
                 if (method.name == "onFetched") {
                     env.hookAfter(method) { param ->
@@ -332,18 +383,28 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                             ?: (param.args.getOrNull(2) as? Bitmap)
                             ?: return@hookAfter
                         val activeUri = currentActiveArtUri
-                        if (url.isNullOrBlank() || activeUri.isNullOrBlank() || url == activeUri || activeUri.contains(url) || url.contains(activeUri)) {
+                        if (isMatchingUri(url, activeUri)) {
                             updateCoverToSessions(currentActiveMediaKey, bitmap, builderClass)
                         }
                     }
-                    count++
+                    hooked++
                 }
             }
+            return hooked
         }
+        classLoader.findClassOrNull("tv.danmaku.bili.ui.player.notification.a\$b")?.let { count += hookListenerClass(it) }
 
         // 2) 拦截 MusicCoverImageCache 缓存写入入口（putLocalBigImage）
         val cacheClass = classLoader.findClassOrNull("tv.danmaku.bili.ui.player.notification.MusicCoverImageCache")
         if (cacheClass != null) {
+            cacheClass.declaredMethods.filter { it.name == "fetch" }.forEach { method ->
+                env.hookBefore(method) { param ->
+                    val listener = param.args.lastOrNull() ?: return@hookBefore
+                    runCatching { hookListenerClass(listener.javaClass) }
+                        .onFailure { log("MediaSessionFix: cover listener hook failed for ${listener.javaClass.name}", it) }
+                }
+                count++
+            }
             for (method in cacheClass.declaredMethods) {
                 if (method.name == "putLocalBigImage") {
                     env.hookAfter(method) { param ->
@@ -353,7 +414,7 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                             ?: (param.args.getOrNull(0) as? Bitmap)
                             ?: return@hookAfter
                         val activeUri = currentActiveArtUri
-                        if (url.isNullOrBlank() || activeUri.isNullOrBlank() || url == activeUri || activeUri.contains(url) || url.contains(activeUri)) {
+                        if (isMatchingUri(url, activeUri)) {
                             updateCoverToSessions(currentActiveMediaKey, bitmap, builderClass)
                         }
                     }
@@ -397,6 +458,7 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                         // 拦截 addCustomAction：直接丢弃 15s 快退/快进，不加入构建列表
                         env.hookBefore(method) { param ->
                             if (!ModuleSettings.isFixMediaSessionCardEnabled(prefs)) return@hookBefore
+                            if (isLiveSession(param.thisObject)) return@hookBefore
                             val is15s = runCatching {
                                 when (param.args.size) {
                                     1 -> {
@@ -445,6 +507,7 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
                 env.hookBefore(fwkSetPlaybackState) { param ->
                     if (!ModuleSettings.isFixMediaSessionCardEnabled(prefs)) return@hookBefore
                     val fwkSession = param.thisObject as? android.media.session.MediaSession
+                    if (isLiveSession(fwkSession)) return@hookBefore
                     if (fwkSession != null && activeFwkSessionRef?.get() == null) {
                         activeFwkSessionRef = java.lang.ref.WeakReference(fwkSession)
                     }
@@ -489,5 +552,3 @@ class MediaSessionFixHook(env: RoamingEnv) : BaseRoamingHook(env) {
         return count
     }
 }
-
-

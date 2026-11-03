@@ -33,6 +33,7 @@ data class BiliHookSymbols(
     val videoDetailBannerAd: VideoDetailBannerAdSymbols? = null,
     val videoDetailRelateFeed: VideoDetailRelateFeedSymbols? = null,
     val homeTopBar: HomeTopBarSymbols? = null,
+    val homeFrame: HomeFrameSymbols? = null,
     val bottomBar: BottomBarSymbols? = null,
     val homeRecommendFeed: HomeRecommendFeedSymbols? = null,
     val homeRecommendTabs: HomeRecommendTabSymbols? = null,
@@ -76,6 +77,7 @@ data class BiliHookSymbols(
         .putOpt("videoDetailBannerAd", videoDetailBannerAd?.toJson())
         .putOpt("videoDetailRelateFeed", videoDetailRelateFeed?.toJson())
         .putOpt("homeTopBar", homeTopBar?.toJson())
+        .putOpt("homeFrame", homeFrame?.toJson())
         .putOpt("bottomBar", bottomBar?.toJson())
         .putOpt("homeRecommendFeed", homeRecommendFeed?.toJson())
         .putOpt("homeRecommendTabs", homeRecommendTabs?.toJson())
@@ -92,7 +94,7 @@ data class BiliHookSymbols(
         .putOpt("videoQuality", videoQuality?.toJson())
 
     companion object {
-        const val CACHE_SCHEMA_VERSION = 39
+        const val CACHE_SCHEMA_VERSION = 40
 
         fun fromJson(raw: String?): BiliHookSymbols? {
             if (raw.isNullOrBlank()) return null
@@ -124,6 +126,7 @@ data class BiliHookSymbols(
                     videoDetailRelateFeed = obj.optJSONObject("videoDetailRelateFeed")
                         ?.let(VideoDetailRelateFeedSymbols::fromJson),
                     homeTopBar = obj.optJSONObject("homeTopBar")?.let(HomeTopBarSymbols::fromJson),
+                    homeFrame = obj.optJSONObject("homeFrame")?.let(HomeFrameSymbols::fromJson),
                     bottomBar = obj.optJSONObject("bottomBar")?.let(BottomBarSymbols::fromJson),
                     homeRecommendFeed = obj.optJSONObject("homeRecommendFeed")?.let(HomeRecommendFeedSymbols::fromJson),
                     homeRecommendTabs = obj.optJSONObject("homeRecommendTabs")?.let(HomeRecommendTabSymbols::fromJson),
@@ -147,7 +150,7 @@ data class BiliHookSymbols(
 }
 
 object DexKitRuleVersions {
-    const val CURRENT = 62
+    const val CURRENT = 66
 }
 
 data class HookPointStatus(
@@ -399,6 +402,9 @@ data class RewardAdSymbols(
     val countDownSetTotalTime: MethodDescriptor? = null,
     val countDownSetElapsedTime: MethodDescriptor? = null,
     val jumpClockField: FieldDescriptor? = null,
+    val timerSetTotalMethod: MethodDescriptor? = null,
+    val jumpResumeMethod: MethodDescriptor? = null,
+    val jumpStartField: FieldDescriptor? = null,
     val miniGameRewardShow: MethodDescriptor? = null,
     val miniGameRewardEmitEvent: MethodDescriptor? = null,
     val miniGameRewardCallback: MethodDescriptor? = null,
@@ -414,6 +420,9 @@ data class RewardAdSymbols(
         .putOpt("countDownSetTotalTime", countDownSetTotalTime?.toJson())
         .putOpt("countDownSetElapsedTime", countDownSetElapsedTime?.toJson())
         .putOpt("jumpClockField", jumpClockField?.toJson())
+        .putOpt("timerSetTotalMethod", timerSetTotalMethod?.toJson())
+        .putOpt("jumpResumeMethod", jumpResumeMethod?.toJson())
+        .putOpt("jumpStartField", jumpStartField?.toJson())
         .putOpt("miniGameRewardShow", miniGameRewardShow?.toJson())
         .putOpt("miniGameRewardEmitEvent", miniGameRewardEmitEvent?.toJson())
         .putOpt("miniGameRewardCallback", miniGameRewardCallback?.toJson())
@@ -430,6 +439,9 @@ data class RewardAdSymbols(
             countDownSetTotalTime = countDownSetTotalTime.restoreOptional(classLoader),
             countDownSetElapsedTime = countDownSetElapsedTime.restoreOptional(classLoader),
             jumpClockField = jumpClockField.restoreOptional(classLoader),
+            timerSetTotalMethod = timerSetTotalMethod.restoreOptional(classLoader),
+            jumpResumeMethod = jumpResumeMethod.restoreOptional(classLoader),
+            jumpStartField = jumpStartField.restoreOptional(classLoader),
             miniGameRewardShow = miniGameRewardShow.restoreOptional(classLoader),
             miniGameRewardEmitEvent = miniGameRewardEmitEvent.restoreOptional(classLoader),
             miniGameRewardCallback = miniGameRewardCallback.restoreOptional(classLoader),
@@ -446,6 +458,9 @@ data class RewardAdSymbols(
             countDownSetTotalTime = obj.optJSONObject("countDownSetTotalTime")?.let(MethodDescriptor::fromJson),
             countDownSetElapsedTime = obj.optJSONObject("countDownSetElapsedTime")?.let(MethodDescriptor::fromJson),
             jumpClockField = obj.optJSONObject("jumpClockField")?.let(FieldDescriptor::fromJson),
+            timerSetTotalMethod = obj.optJSONObject("timerSetTotalMethod")?.let(MethodDescriptor::fromJson),
+            jumpResumeMethod = obj.optJSONObject("jumpResumeMethod")?.let(MethodDescriptor::fromJson),
+            jumpStartField = obj.optJSONObject("jumpStartField")?.let(FieldDescriptor::fromJson),
             miniGameRewardShow = obj.optJSONObject("miniGameRewardShow")?.let(MethodDescriptor::fromJson),
             miniGameRewardEmitEvent = obj.optJSONObject("miniGameRewardEmitEvent")?.let(MethodDescriptor::fromJson),
             miniGameRewardCallback = obj.optJSONObject("miniGameRewardCallback")?.let(MethodDescriptor::fromJson),
@@ -464,6 +479,9 @@ data class RestoredRewardAdSymbols(
     val countDownSetTotalTime: Method?,
     val countDownSetElapsedTime: Method?,
     val jumpClockField: Field?,
+    val timerSetTotalMethod: Method?,
+    val jumpResumeMethod: Method?,
+    val jumpStartField: Field?,
     val miniGameRewardShow: Method?,
     val miniGameRewardEmitEvent: Method?,
     val miniGameRewardCallback: Method?,
@@ -633,27 +651,31 @@ data class SettingsSymbols(
 data class BlockUpdateSymbols(
     val checkMethod: MethodDescriptor,
     val evidence: String,
+    val helperMethods: List<MethodDescriptor> = emptyList(),
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("checkMethod", checkMethod.toJson())
+        .put("helperMethods", helperMethods.toJsonArray { it.toJson() })
         .put("evidence", evidence)
 
     fun restore(classLoader: ClassLoader): RestoredBlockUpdateSymbols? {
         val owner = classLoader.loadClassOrNull(checkMethod.declaringClassName) ?: return null
         val method = checkMethod.restore(owner) ?: return null
-        return RestoredBlockUpdateSymbols(method)
+        return RestoredBlockUpdateSymbols(method, helperMethods.restoreAvailable(classLoader))
     }
 
     companion object {
         fun fromJson(obj: JSONObject): BlockUpdateSymbols = BlockUpdateSymbols(
             checkMethod = MethodDescriptor.fromJson(obj.getJSONObject("checkMethod")),
             evidence = obj.optString("evidence", "-"),
+            helperMethods = obj.optJSONArray("helperMethods").toList { MethodDescriptor.fromJson(it) },
         )
     }
 }
 
 data class RestoredBlockUpdateSymbols(
     val checkMethod: Method,
+    val helperMethods: List<Method> = emptyList(),
 )
 
 data class MineProfileSymbols(
@@ -719,27 +741,18 @@ data class RestoredMineProfileSymbols(
 
 data class DownloadThreadSymbols(
     val listeners: List<DownloadThreadListenerSymbols>,
-    val reportMethod: MethodDescriptor?,
     val evidence: String,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .put("listeners", listeners.toJsonArray { it.toJson() })
-        .putOpt("reportMethod", reportMethod?.toJson())
         .put("evidence", evidence)
 
-    fun restore(classLoader: ClassLoader): RestoredDownloadThreadSymbols {
-        val restoredListeners = listeners.mapNotNull { it.restore(classLoader) }
-        val restoredReport = reportMethod?.let { descriptor ->
-            val owner = classLoader.loadClassOrNull(descriptor.declaringClassName) ?: return@let null
-            descriptor.restore(owner)
-        }
-        return RestoredDownloadThreadSymbols(restoredListeners, restoredReport)
-    }
+    fun restore(classLoader: ClassLoader): RestoredDownloadThreadSymbols =
+        RestoredDownloadThreadSymbols(listeners.mapNotNull { it.restore(classLoader) })
 
     companion object {
         fun fromJson(obj: JSONObject): DownloadThreadSymbols = DownloadThreadSymbols(
             listeners = obj.optJSONArray("listeners").toList { DownloadThreadListenerSymbols.fromJson(it) },
-            reportMethod = obj.optJSONObject("reportMethod")?.let(MethodDescriptor::fromJson),
             evidence = obj.optString("evidence", "-"),
         )
     }
@@ -778,7 +791,6 @@ data class DownloadThreadListenerSymbols(
 
 data class RestoredDownloadThreadSymbols(
     val listeners: List<RestoredDownloadThreadListenerSymbols>,
-    val reportMethod: Method?,
 )
 
 data class RestoredDownloadThreadListenerSymbols(
@@ -1167,9 +1179,11 @@ data class HomeTopBarSymbols(
     val baseOnViewCreated: MethodDescriptor?,
     val defaultWordMethods: List<MethodDescriptor>,
     val evidence: String,
+    val composeGameMenuMethod: MethodDescriptor? = null,
 ) {
     fun toJson(): JSONObject = JSONObject()
         .putOpt("gameMenuMethod", gameMenuMethod?.toJson())
+        .putOpt("composeGameMenuMethod", composeGameMenuMethod?.toJson())
         .putOpt("baseOnViewCreated", baseOnViewCreated?.toJson())
         .put("defaultWordMethods", defaultWordMethods.toJsonArray { it.toJson() })
         .put("evidence", evidence)
@@ -1188,12 +1202,13 @@ data class HomeTopBarSymbols(
             descriptor.restore(owner)
         }
         if (defaultWord.size != defaultWordMethods.size) return null
-        return RestoredHomeTopBarSymbols(gameMenu, onViewCreated, defaultWord)
+        return RestoredHomeTopBarSymbols(gameMenu, onViewCreated, defaultWord, composeGameMenuMethod.restoreOptional(classLoader))
     }
 
     companion object {
         fun fromJson(obj: JSONObject): HomeTopBarSymbols = HomeTopBarSymbols(
             gameMenuMethod = obj.optJSONObject("gameMenuMethod")?.let(MethodDescriptor::fromJson),
+            composeGameMenuMethod = obj.optJSONObject("composeGameMenuMethod")?.let(MethodDescriptor::fromJson),
             baseOnViewCreated = obj.optJSONObject("baseOnViewCreated")?.let(MethodDescriptor::fromJson),
             defaultWordMethods = obj.optJSONArray("defaultWordMethods").toList { MethodDescriptor.fromJson(it) },
             evidence = obj.optString("evidence", "-"),
@@ -1205,6 +1220,7 @@ data class RestoredHomeTopBarSymbols(
     val gameMenuMethod: Method?,
     val baseOnViewCreated: Method?,
     val defaultWordMethods: List<Method>,
+    val composeGameMenuMethod: Method? = null,
 )
 
 data class BottomBarSymbols(
@@ -1957,23 +1973,24 @@ data class ConstructorDescriptor(
 }
 
 data class TripleSpeedSymbols(
-    val experimentReaderMethod: MethodDescriptor,
+    // 9.17 起 playerbizcommonv2 与 playerbizcommon3 各有一个长按倍速实验读取点
+    val experimentReaderMethods: List<MethodDescriptor>,
     val qualitySpeedResetMethod: MethodDescriptor? = null,
     val highFrameRateSpeedGuardMethod: MethodDescriptor? = null,
     val longPressSpeedMethod: MethodDescriptor? = null,
     val evidence: String,
 ) {
     fun toJson(): JSONObject = JSONObject()
-        .put("experimentReaderMethod", experimentReaderMethod.toJson())
+        .put("experimentReaderMethods", experimentReaderMethods.toJsonArray { it.toJson() })
         .putOpt("longPressSpeedMethod", longPressSpeedMethod?.toJson())
         .putOpt("qualitySpeedResetMethod", qualitySpeedResetMethod?.toJson())
         .putOpt("highFrameRateSpeedGuardMethod", highFrameRateSpeedGuardMethod?.toJson())
         .put("evidence", evidence)
 
     fun restore(classLoader: ClassLoader): RestoredTripleSpeedSymbols? {
-        val method = experimentReaderMethod.restoreOptional(classLoader) ?: return null
+        val methods = experimentReaderMethods.restoreAvailable(classLoader).takeIf { it.isNotEmpty() } ?: return null
         return RestoredTripleSpeedSymbols(
-            experimentReaderMethod = method,
+            experimentReaderMethods = methods,
             qualitySpeedResetMethod = qualitySpeedResetMethod.restoreOptional(classLoader),
             highFrameRateSpeedGuardMethod = highFrameRateSpeedGuardMethod.restoreOptional(classLoader),
             longPressSpeedMethod = longPressSpeedMethod.restoreOptional(classLoader),
@@ -1982,7 +1999,7 @@ data class TripleSpeedSymbols(
 
     companion object {
         fun fromJson(obj: JSONObject): TripleSpeedSymbols = TripleSpeedSymbols(
-            experimentReaderMethod = MethodDescriptor.fromJson(obj.getJSONObject("experimentReaderMethod")),
+            experimentReaderMethods = obj.optJSONArray("experimentReaderMethods").toList { MethodDescriptor.fromJson(it) },
             qualitySpeedResetMethod = obj.optJSONObject("qualitySpeedResetMethod")?.let(MethodDescriptor::fromJson),
             highFrameRateSpeedGuardMethod = obj.optJSONObject("highFrameRateSpeedGuardMethod")
                 ?.let(MethodDescriptor::fromJson),
@@ -1993,7 +2010,7 @@ data class TripleSpeedSymbols(
 }
 
 data class RestoredTripleSpeedSymbols(
-    val experimentReaderMethod: Method,
+    val experimentReaderMethods: List<Method>,
     val qualitySpeedResetMethod: Method?,
     val highFrameRateSpeedGuardMethod: Method?,
     val longPressSpeedMethod: Method?,
@@ -2203,48 +2220,27 @@ data class RestoredCustomThemeSymbols(
 )
 
 data class VideoQualitySymbols(
-    val autoSupremumQualityConstructor: ConstructorDescriptor? = null,
-    val qualityStrategySelectMethod: MethodDescriptor? = null,
     val playerPreloadGetMethods: List<MethodDescriptor> = emptyList(),
-    val playerQualityServiceMethods: List<MethodDescriptor> = emptyList(),
     val playerSettingHelperGetDefaultQnMethod: MethodDescriptor? = null,
     val rangeQualityUpdateMethod: MethodDescriptor? = null,
     val evidence: String,
 ) {
     fun toJson(): JSONObject = JSONObject()
-        .putOpt("autoSupremumQualityConstructor", autoSupremumQualityConstructor?.toJson())
-        .putOpt("qualityStrategySelectMethod", qualityStrategySelectMethod?.toJson())
         .put("playerPreloadGetMethods", playerPreloadGetMethods.toJsonArray { it.toJson() })
-        .put("playerQualityServiceMethods", playerQualityServiceMethods.toJsonArray { it.toJson() })
         .putOpt("playerSettingHelperGetDefaultQnMethod", playerSettingHelperGetDefaultQnMethod?.toJson())
         .putOpt("rangeQualityUpdateMethod", rangeQualityUpdateMethod?.toJson())
         .put("evidence", evidence)
 
-    fun restore(classLoader: ClassLoader): RestoredVideoQualitySymbols {
-        val autoSupremumCtor = autoSupremumQualityConstructor?.let { descriptor ->
-            val owner = classLoader.loadClassOrNull(descriptor.declaringClassName) ?: return@let null
-            descriptor.restore(owner)
-        }
-        val strategyMethod = qualityStrategySelectMethod?.restoreOptional(classLoader)
-        val preloadMethods = playerPreloadGetMethods.restoreAvailable(classLoader)
-        val qualityServiceMethods = playerQualityServiceMethods.restoreAvailable(classLoader)
-        val settingDefaultQnMethod = playerSettingHelperGetDefaultQnMethod?.restoreOptional(classLoader)
-        return RestoredVideoQualitySymbols(
-            autoSupremumQualityConstructor = autoSupremumCtor,
-            qualityStrategySelectMethod = strategyMethod,
-            playerPreloadGetMethods = preloadMethods,
-            playerQualityServiceMethods = qualityServiceMethods,
-            playerSettingHelperGetDefaultQnMethod = settingDefaultQnMethod,
+    fun restore(classLoader: ClassLoader): RestoredVideoQualitySymbols =
+        RestoredVideoQualitySymbols(
+            playerPreloadGetMethods = playerPreloadGetMethods.restoreAvailable(classLoader),
+            playerSettingHelperGetDefaultQnMethod = playerSettingHelperGetDefaultQnMethod?.restoreOptional(classLoader),
             rangeQualityUpdateMethod = rangeQualityUpdateMethod?.restoreOptional(classLoader),
         )
-    }
 
     companion object {
         fun fromJson(obj: JSONObject): VideoQualitySymbols = VideoQualitySymbols(
-            autoSupremumQualityConstructor = obj.optJSONObject("autoSupremumQualityConstructor")?.let(ConstructorDescriptor::fromJson),
-            qualityStrategySelectMethod = obj.optJSONObject("qualityStrategySelectMethod")?.let(MethodDescriptor::fromJson),
             playerPreloadGetMethods = obj.optJSONArray("playerPreloadGetMethods").toList { MethodDescriptor.fromJson(it) },
-            playerQualityServiceMethods = obj.optJSONArray("playerQualityServiceMethods").toList { MethodDescriptor.fromJson(it) },
             playerSettingHelperGetDefaultQnMethod = obj.optJSONObject("playerSettingHelperGetDefaultQnMethod")?.let(MethodDescriptor::fromJson),
             rangeQualityUpdateMethod = obj.optJSONObject("rangeQualityUpdateMethod")?.let(MethodDescriptor::fromJson),
             evidence = obj.optString("evidence", "-"),
@@ -2253,10 +2249,7 @@ data class VideoQualitySymbols(
 }
 
 data class RestoredVideoQualitySymbols(
-    val autoSupremumQualityConstructor: Constructor<*>?,
-    val qualityStrategySelectMethod: Method?,
     val playerPreloadGetMethods: List<Method>,
-    val playerQualityServiceMethods: List<Method>,
     val playerSettingHelperGetDefaultQnMethod: Method?,
     val rangeQualityUpdateMethod: Method? = null,
 )
