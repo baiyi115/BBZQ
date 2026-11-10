@@ -75,6 +75,7 @@ import io.github.bbzq.feats.hook.mbgeb.LiveBackupUrlHook
 import io.github.bbzq.feats.hook.mbgeb.LiveQualityHook
 import io.github.bbzq.feats.hook.mbgeb.MediaProxyHook
 import io.github.bbzq.feats.hook.mbgeb.P2pDisableHook
+import io.github.bbzq.feats.hook.PageFontScaleHook
 import io.github.bbzq.feats.symbol.BiliHookSymbols
 import io.github.bbzq.feats.symbol.BiliSymbolResolver
 import io.github.libxposed.api.XposedInterface
@@ -187,6 +188,8 @@ object RoamingRuntime {
                 ::ComponentPoolBlockHook,
                 ::DownloadThreadHook,
                 ::CustomCdnHook,
+                ::SeaBangumiPlayHook,
+                ::SeaBangumiDetailHook,
             )
 
             ProcessScope.MAIN -> listOf(
@@ -254,6 +257,7 @@ object RoamingRuntime {
                 ::LiveBackupUrlHook,
                 ::MediaProxyHook,
                 ::VideoDetailShareRedirectHook,
+                ::PageFontScaleHook,
             )
             ProcessScope.UNSUPPORTED -> emptyList()
         }

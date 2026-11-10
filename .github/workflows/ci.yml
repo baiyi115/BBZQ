@@ -126,12 +126,157 @@ jobs:
         uses: actions/upload-artifact@v4
         if: success() && matrix.label == 'uni'
         with:
-          name: bzzq-${{ env.VERSION }}-${{ matrix.label }}-debug
+          name: bbzq-${{ env.VERSION }}-${{ matrix.label }}-debug
           path: 'app/build/outputs/apk/debug/*.apk'
 
       - name: Upload release artifact
         uses: actions/upload-artifact@v4
         if: success()
         with:
-          name: bzzq-${{ env.VERSION }}-${{ matrix.label }}-release
+          name: bbzq-${{ env.VERSION }}-${{ matrix.label }}-release
           path: 'app/release/*.apk'
+
+  publish:
+    name: Publish to Telegram
+    needs: [version, build]
+    if: success() && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Download all build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Send APKs to Telegram
+        env:
+          TG_BOT_TOKEN: ${{ secrets.TG_BOT_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+          TG_THREAD_ID: ${{ secrets.TG_THREAD_ID }}
+          TITLE: BBZQ
+          VERSION: ${{ needs.version.outputs.version }}
+          BRANCH: ${{ github.ref_name }}
+          COMMIT_URL: ${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+
+          if [ -z "$TG_BOT_TOKEN" ] || [ -z "$TG_CHAT_ID" ]; then
+            echo "::warning::Telegram secrets not configured, skipping upload"
+            exit 0
+          fi
+
+          # Collect release APKs excluding debug and uni
+          APK_FILES=()
+          while IFS= read -r -d '' file; do
+            APK_FILES+=("$file")
+          done < <(find artifacts -type f -name '*.apk' ! -name '*debug*' ! -name '*-uni.apk' -print0 | sort -z)
+
+          if [ ${#APK_FILES[@]} -eq 0 ]; then
+            echo "::warning::No specific ABI release APK found, checking fallback..."
+            while IFS= read -r -d '' file; do
+              APK_FILES+=("$file")
+            done < <(find artifacts -type f -name '*.apk' ! -name '*debug*' -print0 | sort -z)
+          fi
+
+          if [ ${#APK_FILES[@]} -eq 0 ]; then
+            echo "::error::No APK files found to publish"
+            exit 1
+          fi
+
+          COMMIT_MESSAGE=$(git log -1 --pretty=%B 2>/dev/null || echo "No commit message")
+          PRIMARY_AUTHOR=$(git log -1 --pretty=%an 2>/dev/null || echo "Unknown")
+
+          escape_html() {
+            sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g'
+          }
+
+          trim_caption_message() {
+            local text="$1"
+            local limit="$2"
+
+            if [ "$limit" -le 0 ]; then
+              printf ''
+              return
+            fi
+
+            if [ "${#text}" -le "$limit" ]; then
+              printf '%s' "$text"
+              return
+            fi
+
+            if [ "$limit" -le 3 ]; then
+              printf '%.*s' "$limit" '...'
+              return
+            fi
+
+            printf '%s...' "${text:0:$((limit - 3))}"
+          }
+
+          SAFE_TITLE=$(printf '%s' "$TITLE" | escape_html)
+          SAFE_BRANCH=$(printf '%s' "$BRANCH" | escape_html)
+          SAFE_PRIMARY_AUTHOR=$(printf '%s' "$PRIMARY_AUTHOR" | escape_html)
+          SAFE_MESSAGE=$(printf '%s' "$COMMIT_MESSAGE" | sed -e 's/\r//g' | escape_html)
+
+          NL=$'\n'
+          CAPTION_PREFIX="<b>${SAFE_TITLE}</b> ${VERSION}${NL}"
+          CAPTION_PREFIX+="Author: ${SAFE_PRIMARY_AUTHOR}${NL}"
+          CAPTION_PREFIX+="Branch: ${SAFE_BRANCH}${NL}${NL}"
+          CAPTION_SUFFIX="${NL}${NL}<a href=\"${COMMIT_URL}\">Commit</a> | <a href=\"${RUN_URL}\">Workflow run</a>"
+
+          MAX_CAPTION_LENGTH=1024
+          MESSAGE_WRAPPER_LENGTH=36
+          AVAILABLE_MESSAGE_LENGTH=$((MAX_CAPTION_LENGTH - ${#CAPTION_PREFIX} - ${#CAPTION_SUFFIX} - MESSAGE_WRAPPER_LENGTH))
+          SAFE_MESSAGE=$(trim_caption_message "$SAFE_MESSAGE" "$AVAILABLE_MESSAGE_LENGTH")
+          CAPTION="${CAPTION_PREFIX}<blockquote expandable>${SAFE_MESSAGE}</blockquote>${CAPTION_SUFFIX}"
+
+          # Construct media group JSON and curl form parameters
+          # Telegram sendMediaGroup allows 2-10 items of the same type (document).
+          # Caption must be attached to the LAST document (index 2 for 3 files / [-1] in Python)
+          # so all file bubbles are stacked together cleanly on top and caption sits at the bottom.
+          LAST_INDEX=$((${#APK_FILES[@]} - 1))
+          ESCAPED_CAPTION=$(python3 -c "import json, sys; print(json.dumps(sys.argv[1]))" "$CAPTION")
+
+          MEDIA_JSON="["
+          CURL_FORM_ARGS=()
+
+          for i in "${!APK_FILES[@]}"; do
+            apk="${APK_FILES[$i]}"
+            file_key="doc${i}"
+            CURL_FORM_ARGS+=( -F "${file_key}=@${apk}" )
+
+            if [ "$i" -gt 0 ]; then
+              MEDIA_JSON+=","
+            fi
+
+            if [ "$i" -eq "$LAST_INDEX" ]; then
+              MEDIA_JSON+="{\"type\":\"document\",\"media\":\"attach://${file_key}\",\"caption\":${ESCAPED_CAPTION},\"parse_mode\":\"HTML\"}"
+            else
+              MEDIA_JSON+="{\"type\":\"document\",\"media\":\"attach://${file_key}\"}"
+            fi
+          done
+          MEDIA_JSON+="]"
+
+          CURL_ARGS=(
+            --silent --show-error --fail
+            --request POST "https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMediaGroup"
+            -F "chat_id=${TG_CHAT_ID}"
+            -F "media=${MEDIA_JSON}"
+            "${CURL_FORM_ARGS[@]}"
+          )
+
+          if [ -n "${TG_THREAD_ID:-}" ]; then
+            CURL_ARGS+=(-F "message_thread_id=${TG_THREAD_ID}")
+          fi
+
+          echo "Uploading ${#APK_FILES[@]} APK(s) to Telegram as a media group..."
+          for apk in "${APK_FILES[@]}"; do
+            echo "  - $(basename "$apk")"
+          done
+
+          curl "${CURL_ARGS[@]}" >/dev/null
+          echo "Media group uploaded to Telegram successfully."

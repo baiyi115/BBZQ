@@ -78,6 +78,10 @@ class SettingsContentFactory(
     private lateinit var bottomBarSwitch: Switch
     private lateinit var customThemeSwitch: Switch
     private lateinit var customSkinSwitch: Switch
+    private lateinit var customFontScaleSwitch: Switch
+    private lateinit var customFontScaleRow: View
+    private lateinit var customFontScaleSeekBar: SeekBar
+    private lateinit var customFontScaleSummary: TextView
     private lateinit var customThemeColorRow: View
     private lateinit var customThemeColorSummary: TextView
     private lateinit var customThemeColorSwatch: View
@@ -553,6 +557,16 @@ class SettingsContentFactory(
             customSkinSwitch = it
         }
         rows += createCustomSkinConfigRow()
+        rows += createSwitchRow(
+            context.getString(R.string.custom_font_scale_title),
+            context.getString(R.string.custom_font_scale_summary),
+            ModuleSettings.KEY_CUSTOM_FONT_SCALE_ENABLED,
+            false,
+            badges = restartBadges(),
+        ) {
+            customFontScaleSwitch = it
+        }
+        rows += createCustomFontScaleRow()
 
         val items = bottomBarItems()
         if (items.isEmpty()) {
@@ -2364,6 +2378,58 @@ class SettingsContentFactory(
         }
     }
 
+    private fun createCustomFontScaleRow(): View {
+        customFontScaleSummary = TextView(context).apply {
+            textSize = 12f
+            setTextColor(summaryTextColor)
+        }
+        customFontScaleSeekBar = SeekBar(context).apply {
+            max = (ModuleSettings.MAX_CUSTOM_FONT_SCALE_PERCENT - ModuleSettings.MIN_CUSTOM_FONT_SCALE_PERCENT) / 5
+            val currentPercent = ModuleSettings.getCustomFontScalePercent(prefs)
+            progress = ((currentPercent - ModuleSettings.MIN_CUSTOM_FONT_SCALE_PERCENT) / 5).coerceAtLeast(0)
+            setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
+                override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
+                    val percent = ModuleSettings.MIN_CUSTOM_FONT_SCALE_PERCENT + progress * 5
+                    if (!refreshing) {
+                        customFontScaleSummary.text = customFontScaleSummary(percent)
+                    }
+                    if (fromUser) {
+                        prefs.edit()
+                            .putInt(ModuleSettings.KEY_CUSTOM_FONT_SCALE_PERCENT, percent)
+                            .apply()
+                    }
+                }
+
+                override fun onStartTrackingTouch(seekBar: SeekBar?) = Unit
+                override fun onStopTrackingTouch(seekBar: SeekBar?) = Unit
+            })
+        }
+        return LinearLayout(context).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(16), dp(14), dp(16), dp(14))
+            addView(TextView(context).apply {
+                text = context.getString(R.string.custom_font_scale_value_title)
+                textSize = 15f
+                setTextColor(titleTextColor)
+            })
+            addView(customFontScaleSummary.apply {
+                setPadding(0, dp(4), 0, dp(8))
+            })
+            addView(customFontScaleSeekBar)
+            registerSearchTarget(
+                this,
+                context.getString(R.string.custom_font_scale_value_title),
+                context.getString(R.string.custom_font_scale_value_title),
+                ModuleSettings.KEY_CUSTOM_FONT_SCALE_PERCENT,
+            )
+        }.also {
+            customFontScaleRow = it
+        }
+    }
+
+    private fun customFontScaleSummary(percent: Int): String =
+        context.getString(R.string.custom_font_scale_value_summary, percent)
+
     private fun createHalfScreenQualityRow(): View {
         halfScreenQualitySummary = TextView(context).apply {
             textSize = 12f
@@ -3102,6 +3168,7 @@ class SettingsContentFactory(
             key == ModuleSettings.KEY_CUSTOM_BOTTOM_BAR_ENABLED ||
             key == ModuleSettings.KEY_CUSTOM_THEME_ENABLED ||
             key == ModuleSettings.KEY_CUSTOM_SKIN_ENABLED ||
+            key == ModuleSettings.KEY_CUSTOM_FONT_SCALE_ENABLED ||
             key == ModuleSettings.KEY_CUSTOM_HOME_RECOMMEND_FILTER_ENABLED ||
             key == ModuleSettings.KEY_CUSTOM_HOME_RECOMMEND_TAB_FILTER_ENABLED ||
             key == ModuleSettings.KEY_COMMENT_KEYWORD_FILTER_ENABLED ||
@@ -3553,6 +3620,22 @@ class SettingsContentFactory(
                 }.getOrElse { context.getString(R.string.custom_skin_config_loaded, "JSON") }
             }
         }
+        val customFontScaleEnabled = ModuleSettings.isCustomFontScaleEnabled(prefs)
+        if (::customFontScaleSwitch.isInitialized) {
+            customFontScaleSwitch.isChecked = customFontScaleEnabled
+        }
+        if (::customFontScaleSeekBar.isInitialized) {
+            val percent = ModuleSettings.getCustomFontScalePercent(prefs)
+            customFontScaleSeekBar.progress = ((percent - ModuleSettings.MIN_CUSTOM_FONT_SCALE_PERCENT) / 5).coerceAtLeast(0)
+            customFontScaleSummary.text = customFontScaleSummary(percent)
+        }
+        if (::customFontScaleRow.isInitialized) {
+            customFontScaleRow.isEnabled = customFontScaleEnabled
+            customFontScaleRow.alpha = if (customFontScaleEnabled) 1f else 0.45f
+            if (::customFontScaleSeekBar.isInitialized) {
+                customFontScaleSeekBar.isEnabled = customFontScaleEnabled
+            }
+        }
         if (::customCdnWifiSummary.isInitialized) {
             val hosts = ModuleSettings.getCdnPriorityList(prefs, ModuleSettings.KEY_CDN_WIFI_PRIORITY)
             val isEnabled = prefs.getBoolean(ModuleSettings.KEY_CDN_WIFI_ENABLED, false)
@@ -3585,7 +3668,14 @@ class SettingsContentFactory(
         }
         bottomBarItemCheckBoxes.forEach { (id, checkBox) ->
             checkBox.isEnabled = bottomBarEnabled
-            checkBox.isChecked = id !in hiddenBottomBarItems
+            val item = bottomBarItems().firstOrNull { it.id == id }
+            val allKnown = ModuleSettings.getKnownBottomBarItems(prefs).mapNotNull(::parseBottomBarItem)
+            val isHidden = if (item != null) {
+                isBottomBarItemHidden(item, hiddenBottomBarItems, allKnown)
+            } else {
+                id in hiddenBottomBarItems
+            }
+            checkBox.isChecked = !isHidden
         }
         if (::homeRecommendItemSwitch.isInitialized) {
             homeRecommendItemSwitch.isChecked = homeRecommendFilterEnabled
@@ -3800,7 +3890,7 @@ class SettingsContentFactory(
 
     private fun saveHiddenBottomBarItems() {
         prefs.edit()
-            .putStringSet(ModuleSettings.KEY_HIDDEN_BOTTOM_BAR_ITEMS, hiddenBottomBarItemIds().toMutableSet())
+            .putStringSet(ModuleSettings.KEY_HIDDEN_BOTTOM_BAR_ITEMS, collectHiddenBottomBarKeys())
             .apply()
     }
 
@@ -3840,6 +3930,64 @@ class SettingsContentFactory(
 
     private fun hiddenBottomBarItemIds(): Set<String> =
         bottomBarItemCheckBoxes.filterValues { !it.isChecked }.keys.toSet()
+
+    private fun collectHiddenBottomBarKeys(): Set<String> {
+        val allKnown = ModuleSettings.getKnownBottomBarItems(prefs).mapNotNull(::parseBottomBarItem)
+        val hiddenSet = mutableSetOf<String>()
+        val oldHidden = ModuleSettings.getHiddenBottomBarItems(prefs)
+        val uiItems = bottomBarItems()
+        val handledOldKeys = mutableSetOf<String>()
+        uiItems.forEach { item ->
+            val isChecked = bottomBarItemCheckBoxes[item.id]?.isChecked ?: true
+            val matchingKnown = allKnown.filter { k ->
+                (item.id.isNotBlank() && item.id.equals(k.id, ignoreCase = true)) ||
+                    (item.name.isNotBlank() && item.name.equals(k.name, ignoreCase = true)) ||
+                    (item.uri.isNotBlank() && item.uri.equals(k.uri, ignoreCase = true))
+            }
+            val itemKeys = buildSet {
+                if (item.id.isNotBlank()) add(item.id)
+                if (item.name.isNotBlank()) add(item.name)
+                if (item.uri.isNotBlank()) add(item.uri)
+                matchingKnown.forEach { k ->
+                    if (k.id.isNotBlank()) add(k.id)
+                    if (k.name.isNotBlank()) add(k.name)
+                    if (k.uri.isNotBlank()) add(k.uri)
+                }
+            }
+            handledOldKeys.addAll(itemKeys)
+            if (!isChecked) {
+                hiddenSet.addAll(itemKeys)
+            }
+        }
+        oldHidden.forEach { oldKey ->
+            if (oldKey !in handledOldKeys) {
+                hiddenSet.add(oldKey)
+            }
+        }
+        return hiddenSet
+    }
+
+    private fun isBottomBarItemHidden(
+        item: BottomBarItem,
+        hiddenKeys: Set<String>,
+        knownItems: Collection<BottomBarItem>,
+    ): Boolean {
+        if (hiddenKeys.isEmpty()) return false
+        if (item.id in hiddenKeys || item.name in hiddenKeys || (item.uri.isNotBlank() && item.uri in hiddenKeys)) {
+            return true
+        }
+        for (known in knownItems) {
+            val matches = (item.id.isNotBlank() && item.id.equals(known.id, ignoreCase = true)) ||
+                (item.name.isNotBlank() && item.name.equals(known.name, ignoreCase = true)) ||
+                (item.uri.isNotBlank() && item.uri.equals(known.uri, ignoreCase = true))
+            if (matches) {
+                if (known.id in hiddenKeys || known.name in hiddenKeys || (known.uri.isNotBlank() && known.uri in hiddenKeys)) {
+                    return true
+                }
+            }
+        }
+        return false
+    }
 
     private fun hiddenHomeRecommendItemKeys(): Set<String> =
         homeRecommendItemCheckBoxes.filterValues { it.isChecked }.keys.toSet()
@@ -3919,7 +4067,7 @@ class SettingsContentFactory(
     private fun bottomBarItems(): List<BottomBarItem> =
         ModuleSettings.refreshKnownBottomBarItemsCache(prefs)
             .mapNotNull(::parseBottomBarItem)
-            .distinctBy(BottomBarItem::id)
+            .distinctBy { it.name.ifBlank { it.uri.ifBlank { it.id } } }
             .sortedBy(BottomBarItem::order)
 
     private fun homeRecommendTabs(): List<HomeRecommendTabItem> =
@@ -3983,7 +4131,7 @@ class SettingsContentFactory(
 
     private fun mineComponentItems(): List<MineComponentItem> =
         ModuleSettings.getKnownMineComponents(prefs)
-            .filter { it.isNotBlank() }
+            .filter { it.isNotBlank() && !ModuleSettings.isMineSettingsTitle(it) }
             .map(::MineComponentItem)
             .distinctBy(MineComponentItem::name)
             .sortedBy(MineComponentItem::name)

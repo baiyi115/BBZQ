@@ -134,6 +134,11 @@ object ModuleSettings {
     const val KEY_CUSTOM_THEME_COLOR = "custom_theme_color"
     const val KEY_CUSTOM_SKIN_ENABLED = "custom_skin_enabled"
     const val KEY_CUSTOM_SKIN_JSON = "custom_skin_json"
+    const val KEY_CUSTOM_FONT_SCALE_ENABLED = "custom_font_scale_enabled"
+    const val KEY_CUSTOM_FONT_SCALE_PERCENT = "custom_font_scale_percent"
+    const val DEFAULT_CUSTOM_FONT_SCALE_PERCENT = 100
+    const val MIN_CUSTOM_FONT_SCALE_PERCENT = 70
+    const val MAX_CUSTOM_FONT_SCALE_PERCENT = 150
     const val KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED = "block_activity_meta_sticker_enabled"
     const val DEFAULT_CUSTOM_THEME_COLOR = 0xFFFB7299.toInt()
     const val KEY_HIDDEN_BOTTOM_BAR_ITEMS = "hidden_bottom_bar_items"
@@ -408,6 +413,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_CUSTOM_BOTTOM_BAR_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_BOTTOM_BAR_ENABLED, false) },
         ExportableConfigSpec(KEY_CUSTOM_THEME_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_THEME_ENABLED, false) },
         ExportableConfigSpec(KEY_CUSTOM_SKIN_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_SKIN_ENABLED, false) },
+        ExportableConfigSpec(KEY_CUSTOM_FONT_SCALE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_FONT_SCALE_ENABLED, false) },
         ExportableConfigSpec(KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED, false) },
         ExportableConfigSpec(KEY_HIDE_HOME_TOP_BAR_PROMOTION_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_HIDE_HOME_TOP_BAR_PROMOTION_ENABLED, false) },
         ExportableConfigSpec(KEY_HIDE_HOME_SEARCH_DEFAULT_WORD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_HIDE_HOME_SEARCH_DEFAULT_WORD_ENABLED, false) },
@@ -461,6 +467,9 @@ object ModuleSettings {
         })
         add(ExportableConfigSpec(KEY_CUSTOM_THEME_COLOR, ExportableValueType.INT) { prefs ->
             getCustomThemeColor(prefs)
+        })
+        add(ExportableConfigSpec(KEY_CUSTOM_FONT_SCALE_PERCENT, ExportableValueType.INT) { prefs ->
+            getCustomFontScalePercent(prefs)
         })
         add(ExportableConfigSpec(KEY_CUSTOM_SKIN_JSON, ExportableValueType.STRING) { prefs ->
             getCustomSkinJson(prefs)
@@ -950,13 +959,20 @@ object ModuleSettings {
     fun isCustomMineComponentHideEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_MINE_COMPONENT_HIDE_ENABLED, false)
 
+    fun isMineSettingsTitle(title: String?): Boolean =
+        title != null && (title == "设置" || title == "設定" || title.equals("Settings", ignoreCase = true))
+
     fun getHiddenMineComponents(prefs: SharedPreferences): Set<String> =
-        prefs.getStringSet(KEY_HIDDEN_MINE_COMPONENTS, emptySet()) ?: emptySet()
+        (prefs.getStringSet(KEY_HIDDEN_MINE_COMPONENTS, emptySet()) ?: emptySet())
+            .filterNot(::isMineSettingsTitle)
+            .toSet()
 
     fun getKnownMineComponents(prefs: SharedPreferences): Set<String> =
-        knownMineComponentsCache
+        (knownMineComponentsCache
             ?: prefs.getStringSet(KEY_KNOWN_MINE_COMPONENTS, emptySet())
-            ?: emptySet()
+            ?: emptySet())
+            .filterNot(::isMineSettingsTitle)
+            .toSet()
 
     fun cacheKnownMineComponents(items: Set<String>) {
         knownMineComponentsCache = items.toSet()
@@ -1059,6 +1075,16 @@ object ModuleSettings {
 
     fun isCustomSkinEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_SKIN_ENABLED, false)
+
+    fun isCustomFontScaleEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_CUSTOM_FONT_SCALE_ENABLED, false)
+
+    fun getCustomFontScalePercent(prefs: SharedPreferences): Int =
+        prefs.getInt(KEY_CUSTOM_FONT_SCALE_PERCENT, DEFAULT_CUSTOM_FONT_SCALE_PERCENT)
+            .coerceIn(MIN_CUSTOM_FONT_SCALE_PERCENT, MAX_CUSTOM_FONT_SCALE_PERCENT)
+
+    fun getCustomFontScaleFloat(prefs: SharedPreferences): Float =
+        getCustomFontScalePercent(prefs) / 100f
 
     fun isBlockActivityMetaStickerEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED, false)
