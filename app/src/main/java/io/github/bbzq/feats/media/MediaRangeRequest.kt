@@ -220,7 +220,9 @@ internal object MediaRangeRequest {
         }, 100, 100, TimeUnit.MILLISECONDS)
         try {
             synchronized(lock) {
-                if (alternative != null && !budget.isSpeculative) {
+                // 预读也保留非阻塞的主请求槽：被播放器接管后，watch 才能及时发起救援。
+                // startBackup 仍检查实时的 speculative 状态，纯预读不会发额外请求。
+                if (alternative != null) {
                     hedging = true
                     try { requests.execute { run(main) } }
                     catch (_: RejectedExecutionException) { hedging = false }

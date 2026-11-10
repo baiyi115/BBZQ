@@ -180,6 +180,7 @@ object RoamingRuntime {
             ProcessScope.WEB -> listOf(
                 ::ShareHook,
                 ::RewardAdHook,
+                ::PowerSaveHook,
             )
 
             ProcessScope.DOWNLOAD -> listOf(

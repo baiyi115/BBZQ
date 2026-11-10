@@ -25,7 +25,7 @@ import java.util.concurrent.ConcurrentHashMap
 /**
  * 播放与后台的功耗治理。
  *
- * 这些点全部来自实测采样（simpleperf 线程栈 + 交叉引用），每一项都能指出它在为谁省电：
+ * 根据 9.3.0 静态代码与交叉引用定位的客户端工作；实际功耗、外观与兼容性需设备验证。
  *
  * - 后台自杀：`AppStateTracker.c` 在退后台 3 秒后检查堆占用，超过服务端下发的阈值就调度
  *   `RestartJobService` 然后 `System.exit(233)`，等于计划内冷启动。让这个方法不执行即可，
@@ -122,13 +122,19 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val dispatcher = classLoader.findClassOrNull(STARTUP_TASK_DISPATCHER) ?: return 0
         var installed = 0
         dispatcher.allMethods()
-            .filter { method -> method.name in STARTUP_TASK_METHODS && method.parameterCount == 2 }
+            .filter { method ->
+                method.name in STARTUP_TASK_METHODS && method.returnType == Void.TYPE &&
+                    method.parameterCount == 2 && method.parameterTypes[0] == Context::class.java &&
+                    method.parameterTypes[1].isArray &&
+                    method.parameterTypes[1].componentType?.name == SERVICE_CUSTOMIZABLE_ACTION
+            }
             .forEach { method ->
                 env.hookBefore(method) { param ->
                     val actions = param.args.getOrNull(1) as? Array<*> ?: return@hookBefore
-                    if (actions.any { it?.javaClass?.name == AUTO_START_ALL_TASK_ACTION }) {
-                        param.result = null
-                    }
+                    val retained = StartupDownloadActionPolicy.filter(actions)
+                    if (retained === actions) return@hookBefore
+                    if (retained.isEmpty()) param.result = null
+                    else param.args[1] = retained
                 }
                 installed++
             }
@@ -189,11 +195,27 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
         installed += assetHooks
 
+        installed += installCtcRippleFreeze()
         installed += installPlayerPillSVGAFreeze()
         installed += installPlayerPillMarqueeFreeze()
         installed += installCustomMarqueeFreeze()
         installed += installLivingAvatarWaveFreeze()
         return installed
+    }
+
+    /** 在启动协程前停止 CTC 涟漪生产者；保留 drawable 构建及主题初始化。 */
+    private fun installCtcRippleFreeze(): Int {
+        val drawable = classLoader.findClassOrNull(CTC_ANIMATION_LAYERS) ?: return 0
+        val continuation = classLoader.findClassOrNull(CONTINUATION_IMPL) ?: return 0
+        val method = drawable.methodOrNull("b", continuation) ?: return 0
+        if (method.returnType != Any::class.java || Modifier.isStatic(method.modifiers)) return 0
+        // suspend 方法必须返回宿主 Kotlin 的 Unit，不能返回 null 或模块的 Unit。
+        val unit = classLoader.findClassOrNull("kotlin.Unit")?.let { type ->
+            runCatching { type.getField("INSTANCE").get(null) }.getOrNull()
+                ?.takeIf { type.isInstance(it) }
+        } ?: return 0
+        env.hookBefore(method) { param -> param.result = unit }
+        return 1
     }
 
     /**
@@ -240,8 +262,9 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val setAnimation = lottieView.methodOrNull(SET_ANIMATION, String::class.java) ?: return 0
         env.hookBefore(setAnimation) { param ->
             val asset = param.args.getOrNull(0) as? String ?: return@hookBefore
-            if (asset !in FROZEN_LOTTIE_ASSETS) return@hookBefore
-            (param.thisObject as? View)?.let { frozenAssetViews.add(it) }
+            val view = param.thisObject as? View ?: return@hookBefore
+            if (asset in FROZEN_LOTTIE_ASSETS) frozenAssetViews.add(view)
+            else frozenAssetViews.remove(view)
         }
         return 1
     }
@@ -398,8 +421,10 @@ class PowerSaveHook(env: RoamingEnv) : BaseRoamingHook(env) {
         const val LOTTIE_DRAWABLE = "com.airbnb.lottie.LottieDrawable"
         const val ABR_PARAMS = "tv.danmaku.ijk.media.player.AbrParamsInterface"
 
-        const val AUTO_START_ALL_TASK_ACTION =
-            "tv.danmaku.bili.services.videodownload.action.AutoStartAllTaskIfNeedAction"
+        const val SERVICE_CUSTOMIZABLE_ACTION =
+            "com.bilibili.videodownloader.action.ServiceCustomizableAction"
+        const val CTC_ANIMATION_LAYERS = "com.bilibili.ctc.common.avatar.plugin.live.drawable.e"
+        const val CONTINUATION_IMPL = "kotlin.coroutines.jvm.internal.ContinuationImpl"
         const val GET_DD_SWITCH = "GetDdSwitch"
 
         /** 播放页药丸的组成部件：SVGA 动画、图片与文字，这几个类型都不在混淆范围。 */
