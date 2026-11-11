@@ -3,32 +3,19 @@ package io.github.bbzq.feats
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.IOException
-import java.net.SocketTimeoutException
-import java.util.concurrent.ScheduledThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 /**
- * 单段 Range 请求的公共部分。
+ * 离线下载的单段 Range 请求。在线播放不经过此处，由官方播放器负责取流。
  *
- * 下载器与本地媒体代理都要"发一个 `bytes=a-b` 请求、确认服务端真的按区间回、再把这
- * 恰好 N 个字节交给某个目的"。区别只在落到哪里（文件偏移 vs 内存）。
- *
- * 把请求头、206 契约、长度校验与 `Content-Range` 解析收在这一处：这几条是正确性
- * 关键，散成几份迟早有一份会漏掉某个校验。
+ * 请求头、206 契约、长度校验与 `Content-Range` 解析集中维护，避免分片写入错误偏移。
  */
 internal object HttpRange {
 
-    /** 这几个头两边都一样：不要压缩（Range 会失效）、要 Referer、用桌面 UA。 */
+    /** 下载 Range 不启用压缩，附带 Referer 与桌面 UA。 */
     private const val USER_AGENT =
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.36"
 
     private const val READ_BUFFER_BYTES = 64 * 1024
-    private val startupTimers by lazy {
-        ScheduledThreadPoolExecutor(1) { task ->
-            Thread(task, "bbzq-range-startup").apply { isDaemon = true }
-        }.apply { removeOnCancelPolicy = true }
-    }
 
     /** 解析 CDN 返回的 `Content-Range: bytes a-b/total`。 */
     data class ContentRange(val start: Long, val end: Long, val total: Long?)
@@ -81,8 +68,6 @@ internal object HttpRange {
         onHeaders: (Response) -> Unit = {},
         budget: RangeRequestBudget? = null,
         ifRange: String? = null,
-        firstByteTimeoutMs: Long = 0,
-        deferHeadersUntilBody: Boolean = false,
         write: (buffer: ByteArray, offset: Int, length: Int) -> Unit,
     ): Response {
         if (start < 0 || end < start || end - start >= Int.MAX_VALUE) throw IOException("invalid range: $start-$end")
@@ -98,11 +83,6 @@ internal object HttpRange {
 
         val call = client.newCall(request)
         budget?.attach(call)
-        val waiting = AtomicBoolean(firstByteTimeoutMs > 0)
-        val expired = AtomicBoolean(false)
-        val startup = if (firstByteTimeoutMs > 0) startupTimers.schedule({
-            if (waiting.compareAndSet(true, false)) { expired.set(true); call.cancel() }
-        }, firstByteTimeoutMs, TimeUnit.MILLISECONDS) else null
         try {
             call.execute().use { response ->
                 if (response.code != 206) throw IOException("HTTP ${response.code} for $start-$end")
@@ -111,7 +91,7 @@ internal object HttpRange {
                 val body = response.body ?: throw IOException("empty response body")
                 val parsed = parseContentRange(response.header("Content-Range"))
                     ?: throw IOException("missing or invalid Content-Range")
-                // 只允许精确的区间，或明确在 EOF 截短；不能把错误位置交给播放器/下载器。
+                // 只允许精确的区间，或明确在 EOF 截短；不能把错误位置交给下载器。
                 if (parsed.start != start || parsed.end > end ||
                     (parsed.end < end && parsed.total != parsed.end + 1)) {
                     throw IOException("mismatched Content-Range for $start-$end")
@@ -125,10 +105,7 @@ internal object HttpRange {
                 }
                 val meta = Response(parsed.start, parsed.end, parsed.total, response.header("Content-Type"), tag)
                 budget?.remainingNanos()
-                // 多源预算下先确认正文到达，再提交下游头，空响应仍可安全回退。
-                val waitForBody = deferHeadersUntilBody || firstByteTimeoutMs > 0
-                if (!waitForBody) onHeaders(meta)
-                var headersPending = waitForBody
+                onHeaders(meta)
                 val buffer = ByteArray(READ_BUFFER_BYTES)
                 var remaining = expected
                 body.byteStream().use { input ->
@@ -137,27 +114,13 @@ internal object HttpRange {
                         val read = input.read(buffer, 0, minOf(buffer.size.toLong(), remaining).toInt())
                         if (read == -1) throw IOException("short body: ${expected - remaining}/$expected")
                         if (read == 0) continue
-                        if (headersPending) {
-                            if (firstByteTimeoutMs > 0 && !waiting.compareAndSet(true, false)) {
-                                throw SocketTimeoutException("media first byte deadline exceeded")
-                            }
-                            startup?.cancel(false)
-                            budget?.remainingNanos()
-                            onHeaders(meta)
-                            headersPending = false
-                        }
                         write(buffer, 0, read)
                         remaining -= read
                     }
                 }
                 return meta
             }
-        } catch (e: IOException) {
-            if (expired.get()) throw SocketTimeoutException("media first byte deadline exceeded").apply { initCause(e) }
-            throw e
         } finally {
-            waiting.set(false)
-            startup?.cancel(false)
             budget?.detach(call)
         }
     }

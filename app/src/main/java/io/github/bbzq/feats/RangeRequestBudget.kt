@@ -4,11 +4,8 @@ import okhttp3.Call
 import java.io.InterruptedIOException
 import java.util.concurrent.TimeUnit
 
-/** 整个媒体块共用的单调时钟预算；包含排队、回源重试与响应体读取。 */
-internal class RangeRequestBudget(timeoutMs: Long = 30_000, speculative: Boolean = false) {
-    @Volatile var isSpeculative = speculative
-        private set
-    fun promoteToForeground() { isSpeculative = false }
+/** 下载区间共用的单调时钟预算；包含排队、回源重试与响应体读取。 */
+internal class RangeRequestBudget(timeoutMs: Long = 30_000) {
     private val deadline = System.nanoTime() + TimeUnit.MILLISECONDS.toNanos(timeoutMs)
     private val calls = HashSet<Call>()
     private val cancellationActions = ArrayList<() -> Unit>()

@@ -12,25 +12,11 @@ class PiecePlanningTest {
     private fun download(offset: Long, length: Long, sources: Int) =
         PiecePlanning.plan(offset, length, sources, PiecePlanning.DOWNLOAD)
 
-    private fun proxy(offset: Long, length: Long, sources: Int) =
-        PiecePlanning.plan(offset, length, sources, PiecePlanning.MEDIA_PROXY)
-
     @Test
     fun testDownloadSkipsSmallFilesAndSingleSource() {
         assertNull(download(0, 64 * mib, 1))
         assertNull(download(0, 4 * mib, 4))
         assertNull(download(0, 0, 4))
-    }
-
-    @Test
-    fun testMediaProxySplitsMuchSmallerChunks() {
-        // 代理每次只服务一块，阈值低得多：4 MiB 就值得切
-        assertNull(download(0, 4 * mib, 4))
-        assertEquals(4, proxy(0, 4 * mib, 4)!!.size)
-        // 低到 1 MiB 仍切两片
-        assertEquals(2, proxy(0, 1 * mib, 4)!!.size)
-        // 半块不切
-        assertNull(proxy(0, 512 * 1024L, 4))
     }
 
     @Test
@@ -48,10 +34,10 @@ class PiecePlanningTest {
 
     @Test
     fun testStartOffsetIsHonoured() {
-        // 代理服务的是文件中间的一段，片的绝对偏移必须落在这一段里
+        // 断点续传的片偏移必须落在剩余下载区间。
         val start = 100L * mib
-        val length = 4 * mib
-        val pieces = proxy(start, length, 4)!!
+        val length = 16 * mib
+        val pieces = download(start, length, 4)!!
         assertEquals(start, pieces.first().start)
         assertEquals(start + length - 1, pieces.last().end)
         assertEquals(length, pieces.sumOf { it.length })

@@ -73,7 +73,6 @@ import io.github.bbzq.feats.hook.VideoDetailShareRedirectHook
 import io.github.bbzq.feats.hook.VideoEndRecommendHook
 import io.github.bbzq.feats.hook.mbgeb.LiveBackupUrlHook
 import io.github.bbzq.feats.hook.mbgeb.LiveQualityHook
-import io.github.bbzq.feats.hook.mbgeb.MediaProxyHook
 import io.github.bbzq.feats.hook.mbgeb.P2pDisableHook
 import io.github.bbzq.feats.hook.PageFontScaleHook
 import io.github.bbzq.feats.symbol.BiliHookSymbols
@@ -255,7 +254,6 @@ object RoamingRuntime {
                 ::P2pDisableHook,
                 ::LiveQualityHook,
                 ::LiveBackupUrlHook,
-                ::MediaProxyHook,
                 ::VideoDetailShareRedirectHook,
                 ::PageFontScaleHook,
             )

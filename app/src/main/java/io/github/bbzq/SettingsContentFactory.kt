@@ -4279,12 +4279,6 @@ class SettingsContentFactory(
             ModuleSettings.KEY_LIVE_BACKUP_URL_ENABLED,
             false,
         ),
-        createSwitchRow(
-            context.getString(R.string.mbgeb_media_proxy_title),
-            context.getString(R.string.mbgeb_media_proxy_summary),
-            ModuleSettings.KEY_MEDIA_PROXY_ENABLED,
-            false,
-        ),
     )
 
     private companion object {

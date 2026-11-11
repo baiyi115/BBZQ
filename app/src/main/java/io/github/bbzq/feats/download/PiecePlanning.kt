@@ -3,9 +3,8 @@ package io.github.bbzq.feats.download
 /**
  * 字节区间的切分与分配。
  *
- * 下载与本地媒体代理都要"把一段区间切成互不重叠的片、分散到多个源上并行取"，
- * 差别只在参数：下载是长连接、片大、片少；代理每次只服务一块、片小、片数受可用源
- * 限制。所以切分逻辑只有一份，调用方各自给一套 [Policy]。
+ * 仅用于离线下载：把文件区间切成互不重叠的片，分散到多个源上并行取。
+ * 在线播放不经此处拆片，由官方播放器直接管理取流与缓冲。
  *
  * 纯运算，无 Android 依赖，可直接单测。
  */
@@ -34,17 +33,10 @@ object PiecePlanning {
         maxPieces = 16,
     )
 
-    /** 本地媒体代理：每次服务一小块，片要小、要快，片数受可用源数限制。 */
-    val MEDIA_PROXY = Policy(
-        minTotalBytes = MIN_PROXY_PIECE_BYTES,
-        targetPieceBytes = MIN_PROXY_PIECE_BYTES,
-        maxPieces = 4,
-    )
-
     /**
      * 切分 `[startOffset, startOffset + length - 1]`。
      *
-     * 起点可作为参数传入，便于对文件中间的一段（代理每次服务的一块）直接切分。
+     * 起点可作为参数传入，便于切分断点续传的剩余区间。
      * 返回 `null` 表示不值得并行，调用方走单连接。
      *
      * 片数不超过源数的两倍：再多也只是让每个源多排几片，对总耗时没有帮助，反而增加
@@ -81,6 +73,4 @@ object PiecePlanning {
 
     private const val MIB = 1024L * 1024L
 
-    /** 代理的单片下限：再小的话，建立连接与首个字节的耗时占比过高。 */
-    const val MIN_PROXY_PIECE_BYTES = 512L * 1024L
 }
