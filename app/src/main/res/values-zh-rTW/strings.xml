@@ -25,7 +25,7 @@
     <string name="unlock_video_features_ui_title">無限試用介面同步</string>
     <string name="unlock_video_features_ui_summary">同步角標、提示和試用展示層，主要影響介面上的可見狀態。</string>
     <string name="unlock_highest_bitrate_title">解鎖最高位元率</string>
-    <string name="unlock_highest_bitrate_summary">自動強制請求 QN 127 最高畫質，依 8K＞杜比視界＞HDR＞4K 的優先順序選擇伺服器回傳的最高檔位與最高位元率候選，並在播放器控制列提供帶帳號浮水印的影片統計資訊。</string>
+    <string name="unlock_highest_bitrate_summary">自動強制請求 QN 127 最高畫質，依 8K＞杜比視界＞HDR＞4K 的優先順序選擇伺服器回傳的最高檔位與最高位元率候選，並在影片簡介提供帶帳號浮水印的回應候選統計資訊（非即時解碼狀態）。</string>
     <string name="avoid_hdr_dolby_title">避免 HDR / 杜比視界</string>
     <string name="avoid_hdr_dolby_summary">需先開啟「解鎖最高位元率」。跳過 HDR 與杜比視界檔位，改選同級最高的 SDR 畫質（適合非 HDR 螢幕），8K 不受影響。</string>
     <string name="fake_wifi_title">偽裝 Wi-Fi</string>

@@ -66,7 +66,7 @@ object ModuleSettings {
     /** MBGTEB 移植：关闭 IJK 播放器的 P2P / PCDN。 */
     const val KEY_P2P_DISABLE_ENABLED = "p2p_disable_enabled"
 
-    /** MBGTEB 移植：只使用本机有硬件解码器的视频编码。 */
+    /** 普通视频尽可能优先硬件解码，保留官方软件解码退路。 */
     const val KEY_PREFER_HARDWARE_DECODER_ENABLED = "prefer_hardware_decoder_enabled"
 
 

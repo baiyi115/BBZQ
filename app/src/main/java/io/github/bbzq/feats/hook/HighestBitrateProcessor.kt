@@ -2,23 +2,14 @@ package io.github.bbzq.feats.hook
 
 import io.github.bbzq.feats.allMethods
 import io.github.bbzq.feats.callMethod
+import io.github.bbzq.feats.getObjectField
 import io.github.bbzq.feats.setObjectField
+import io.github.bbzq.feats.hook.mbgeb.CodecCapability
 
 /** Request/response policy used by the single PlayView hook pipeline. */
 internal class HighestBitrateProcessor(
     private val reportFailure: (String, Throwable) -> Unit,
 ) {
-    /** When true, skip HDR (125) and Dolby Vision (126) tiers when picking the target quality. */
-    var avoidHdrDolby: Boolean = false
-
-    /**
-     * 只保留这些 codecid 的流；`null` 表示不筛选。
-     *
-     * 由 [io.github.bbzq.feats.hook.mbgeb.CodecCapability] 按本机硬解能力算出，
-     * 目的是让播放器不去选只能软解的编码。
-     */
-    var allowedCodecIds: Set<Long>? = null
-
     fun prepareRequest(request: Any?) {
         if (request == null) return
         runCatching {
@@ -34,22 +25,24 @@ internal class HighestBitrateProcessor(
             val vodInfo = response.callMethod("getVodInfo")
             val viewInfo = response.callMethod("getViewInfo")
             readSelectedStats(vodInfo) ?: readSelectedStats(videoInfo) ?: readSelectedStats(viewInfo)
+                ?: readSelectedStats(viewInfo?.callMethod("getVideoInfo"))
         }.onFailure {
             reportFailure("response stats read failed at ${response.javaClass.name}", it)
         }.getOrNull()
     }
 
-    fun preferHighestBitrate(response: Any?): VideoStreamStats? {
+    fun preferHighestBitrate(response: Any?, avoidHdrDolby: Boolean = false): VideoStreamStats? {
         if (response == null) return null
         return runCatching {
             val videoInfo = response.callMethod("getVideoInfo")
             val vodInfo = response.callMethod("getVodInfo")
             val viewInfo = response.callMethod("getViewInfo")
-            reorderStreams(videoInfo)
-            reorderStreams(vodInfo)
-            reorderStreams(viewInfo)
-            reorderStreams(viewInfo?.callMethod("getVideoInfo"))
+            reorderStreams(videoInfo, avoidHdrDolby)
+            reorderStreams(vodInfo, avoidHdrDolby)
+            reorderStreams(viewInfo, avoidHdrDolby)
+            reorderStreams(viewInfo?.callMethod("getVideoInfo"), avoidHdrDolby)
             readSelectedStats(vodInfo) ?: readSelectedStats(videoInfo) ?: readSelectedStats(viewInfo)
+                ?: readSelectedStats(viewInfo?.callMethod("getVideoInfo"))
         }.onFailure {
             reportFailure("response selection failed at ${response.javaClass.name}", it)
         }.getOrNull()
@@ -64,18 +57,17 @@ internal class HighestBitrateProcessor(
         invokeNumber(target, "setQn", HIGHEST_QN)
     }
 
-    private fun reorderStreams(container: Any?) {
+    private fun reorderStreams(container: Any?, avoidHdrDolby: Boolean) {
         if (container == null) return
-        filterCodecStreams(container)
         val original = streamsOf(container)
-        if (original.size < 2) return
 
         // Promote the most-preferred available tier as the selected quality. The order mirrors
         // the reference script's QUALITY_ORDER (8K > 杜比视界 > HDR > 4K > 1080P高码率 > 1080P60 > …)
         // rather than a raw numeric max, so e.g. 1080P高码率(112) wins over 1080P60(116). When
-        // avoidHdrDolby is set, HDR/Dolby Vision tiers are skipped (8K stays, it is not HDR).
+        // avoidHdrDolby is set, explicit HDR/Dolby Vision tiers are skipped; QN 127 is unchanged.
+        // QN alone is not proof of a stream's colour space or bit depth.
         original.asSequence()
-            .filter { it.callMethod("getDashVideo") != null }
+            .filter { dashVideo(it) != null }
             .mapNotNull { stream -> stream.callMethod("getStreamInfo")?.let { number(it, "getQuality") } }
             .filter { !avoidHdrDolby || (it != QN_HDR && it != QN_DOLBY_VISION) }
             .minByOrNull(::preferenceRank)
@@ -83,6 +75,7 @@ internal class HighestBitrateProcessor(
 
         // Only compare equivalent representations. Comparing AVC and AV1 bandwidth directly,
         // for example, would prefer the less efficient codec rather than the better picture.
+        if (original.size < 2) return
         val replacements = original
             .groupBy(::representationKey)
             .filterKeys { it != null }
@@ -104,11 +97,11 @@ internal class HighestBitrateProcessor(
             .orEmpty()
         val stream = streams.firstOrNull { candidate ->
             val info = candidate.callMethod("getStreamInfo") ?: return@firstOrNull false
-            candidate.callMethod("getDashVideo") != null &&
+            dashVideo(candidate) != null &&
                 (selectedQuality == null || number(info, "getQuality") == selectedQuality)
         } ?: return null
         val info = stream.callMethod("getStreamInfo") ?: return null
-        val video = stream.callMethod("getDashVideo") ?: return null
+        val video = dashVideo(stream) ?: return null
         val stats = VideoStreamStats(
             quality = number(info, "getQuality") ?: selectedQuality ?: 0,
             bandwidth = number(video, "getBandwidth") ?: 0,
@@ -178,7 +171,7 @@ internal class HighestBitrateProcessor(
 
     private fun representationKey(stream: Any): RepresentationKey? {
         val info = stream.callMethod("getStreamInfo") ?: return null
-        val video = stream.callMethod("getDashVideo") ?: return null
+        val video = dashVideo(stream) ?: return null
         return RepresentationKey(
             quality = number(info, "getQuality") ?: return null,
             codec = number(video, "getCodecid") ?: number(video, "getCodeId") ?: 0,
@@ -189,19 +182,17 @@ internal class HighestBitrateProcessor(
     }
 
     private fun bandwidth(stream: Any): Long {
-        val video = stream.callMethod("getDashVideo") ?: return Long.MIN_VALUE
+        val video = dashVideo(stream) ?: return Long.MIN_VALUE
         return number(video, "getBandwidth") ?: Long.MIN_VALUE
     }
 
-    /** 去掉本机没有硬件解码器的编码。读不到 codecid 的流保留，筛光时也保持原样。 */
-    private fun filterByCodec(streams: List<Any>): List<Any> {
-        val allowed = allowedCodecIds ?: return streams
-        val kept = streams.filter { stream ->
-            val video = stream.callMethod("getDashVideo") ?: return@filter true
-            val codec = number(video, "getCodecid") ?: number(video, "getCodeId") ?: return@filter true
-            codec in allowed
-        }
-        return kept.ifEmpty { streams }
+    /** Absent protobuf message fields may expose a non-null default instance. */
+    private fun dashVideo(stream: Any): Any? {
+        if (stream.callMethod("hasDashVideo") == false) return null
+        val video = stream.callMethod("getDashVideo") ?: return null
+        val url = video.callMethod("getBaseUrl") as? String
+        val backup = video.callMethod("getBackupUrlList") as? Iterable<*>
+        return video.takeIf { !url.isNullOrBlank() || backup?.any { it is String && it.isNotBlank() } == true }
     }
 
     private fun streamsOf(container: Any): List<Any> =
@@ -209,60 +200,83 @@ internal class HighestBitrateProcessor(
             ?.filterNotNull()
             .orEmpty()
 
-    /** 按本机硬解能力筛掉编码。即便只剩一条流也要替换，否则播放器仍可能选中它。 */
-    private fun filterCodecStreams(container: Any?) {
-        if (container == null) return
-        val all = streamsOf(container)
-        if (all.isEmpty()) return
-        val kept = filterByCodec(all)
-        if (kept.size != all.size) replaceStreamList(container, all, kept)
-    }
-
-    /**
-     * 只做编码筛选，不动画质与带宽排序。
-     *
-     * 单独开出来是因为"只用硬件解码的编码"应当独立于"解锁最高码率"生效：
-     * 后者会顺带提升画质，不该被这个开关带出来。
-     */
-    fun applyCodecFilterOnly(response: Any?) {
-        if (response == null || allowedCodecIds == null) return
-        runCatching {
-            filterCodecStreams(response.callMethod("getVideoInfo"))
-            filterCodecStreams(response.callMethod("getVodInfo"))
-            filterCodecStreams(response.callMethod("getViewInfo"))
-            filterCodecStreams(response.callMethod("getViewInfo")?.callMethod("getVideoInfo"))
-        }.onFailure {
-            reportFailure("codec filtering failed at ${response.javaClass.name}", it)
+    /** Rank equivalent ordinary SDR candidates without deleting any fallback or changing QN. */
+    fun preferHardware(response: Any?) {
+        if (response == null) return
+        val view = response.callMethod("getViewInfo")
+        val containers = listOfNotNull(response.callMethod("getVideoInfo"), response.callMethod("getVodInfo"),
+            view, view?.callMethod("getVideoInfo"))
+        val seen = java.util.IdentityHashMap<Any, Boolean>()
+        containers.forEach { container ->
+            if (seen.put(container, true) != null) return@forEach
+            val original = streamsOf(container)
+            val reordered = HardwareStreamPreference.reorder(original, key = { stream ->
+                val rep = representationKey(stream)
+                val video = dashVideo(stream)
+                val rate = rep?.let { HardwareStreamPreference.frameRate(it.frameRate) }
+                // Do not infer HDR/bit depth from QN, or move unknown / DRM representations.
+                if (rep == null || video == null || rate == null || rep.quality !in SDR_QUALITIES ||
+                    rep.width <= 0 || rep.height <= 0 || (number(video, "getDrmType") ?: 0) != 0L) null
+                else HardwareKey(rep.quality, rep.width, rep.height, rate)
+            }, preferred = { stream ->
+                val video = dashVideo(stream)
+                video != null && CodecCapability.matchesKnownConstraints(CodecCapability.VideoSpec(
+                    codecId = number(video, "getCodecid") ?: number(video, "getCodeId") ?: 0,
+                    width = number(video, "getWidth")?.toInt() ?: 0,
+                    height = number(video, "getHeight")?.toInt() ?: 0,
+                    frameRate = HardwareStreamPreference.frameRate(stringValue(video, "getFrameRate", "getFrameRateValue", "getFps")),
+                    bitrate = number(video, "getBandwidth") ?: 0,
+                ))
+            })
+            if (!sameStreams(original, reordered)) replaceStreamList(container, original, reordered)
         }
     }
 
-    private fun replaceStreamList(container: Any, original: List<Any>, reordered: List<Any>) {
+    private data class HardwareKey(val quality: Long, val width: Long, val height: Long, val rate: Double)
+
+    private fun sameStreams(a: List<Any>, b: List<Any>): Boolean =
+        a.size == b.size && a.indices.all { a[it] === b[it] }
+
+    /** Check writes through the getter; do not mistake a non-throwing call for success. */
+    private fun replaceStreamList(container: Any, original: List<Any>, reordered: List<Any>): Boolean {
         val exposed = container.callMethod("getStreamListList")
-        val replacedInPlace = runCatching {
-            @Suppress("UNCHECKED_CAST")
-            (exposed as MutableList<Any>).apply {
-                clear()
-                addAll(reordered)
-            }
-            true
-        }.getOrDefault(false)
-        if (replacedInPlace) return
-
-        val fieldReplaced = runCatching {
-            container.setObjectField("streamList_", reordered)
-        }.getOrDefault(false)
-        if (fieldReplaced) return
-
-        val cleared = invokeNoArg(container, "clearStreamList")
-        if (!cleared || !invokeOneArg(container, "addAllStreamList", reordered)) {
-            // Restore when a generated protobuf exposes clear but not addAll on this version.
-            if (cleared) invokeOneArg(container, "addAllStreamList", original)
+        // Prefer replacing the field atomically. Reflect refuses incompatible specialised list types.
+        val fieldValue = container.getObjectField("streamList_")
+        if (container.setObjectField("streamList_", reordered)) {
+            if (sameStreams(streamsOf(container), reordered)) return true
+            container.setObjectField("streamList_", fieldValue)
         }
+        val replaced = runCatching {
+            @Suppress("UNCHECKED_CAST")
+            val list = exposed as MutableList<Any>
+            list.clear()
+            list.addAll(reordered)
+            sameStreams(streamsOf(container), reordered)
+        }.getOrDefault(false)
+        if (replaced) return true
+        // Undo a partial clear/add before trying generated mutators.
+        if (!sameStreams(streamsOf(container), original)) runCatching {
+            @Suppress("UNCHECKED_CAST")
+            val list = exposed as MutableList<Any>
+            list.clear()
+            list.addAll(original)
+        }
+        val methods = container.javaClass.allMethods().toList()
+        val canClear = methods.any { it.name == "clearStreamList" && it.parameterCount == 0 }
+        val canAdd = methods.any { it.name == "addAllStreamList" && it.parameterCount == 1 && it.parameterTypes[0].isInstance(reordered) }
+        if (canClear && canAdd && invokeNoArg(container, "clearStreamList")) {
+            invokeOneArg(container, "addAllStreamList", reordered)
+            if (sameStreams(streamsOf(container), reordered)) return true
+            invokeNoArg(container, "clearStreamList")
+            invokeOneArg(container, "addAllStreamList", original)
+        }
+        reportFailure("stream list write/readback failed at ${container.javaClass.name}",
+            IllegalStateException("original restored=${sameStreams(streamsOf(container), original)}"))
+        return false
     }
 
     // Lower is more preferred; unknown qn values rank last
     private fun preferenceRank(qn: Long): Int {
-        if (avoidHdrDolby && (qn == QN_HDR || qn == QN_DOLBY_VISION)) return Int.MAX_VALUE - 1
         val index = QN_PREFERENCE.indexOf(qn)
         return if (index >= 0) index else Int.MAX_VALUE
     }
@@ -322,6 +336,7 @@ internal class HighestBitrateProcessor(
         const val HIGHEST_QN = 127L
         const val QN_HDR = 125L
         const val QN_DOLBY_VISION = 126L
+        val SDR_QUALITIES = setOf(16L, 32L, 64L, 74L, 80L, 112L, 116L, 120L)
 
         // Quality preference from best to worst, mirroring the reference script's QUALITY_ORDER.
         // 8K(127) > 杜比视界(126) > HDR(125) > 4K(120) > 1080P高码率(112) > 1080P60(116) > 1080P(80) > 720P60(74) > 720P(64) > 480P(32) > 360P(16).

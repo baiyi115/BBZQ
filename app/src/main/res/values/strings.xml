@@ -35,7 +35,7 @@
     <string name="unlock_video_features_ui_title">无限试用界面同步</string>
     <string name="unlock_video_features_ui_summary">同步角标、提示和试用展示层，主要影响 UI 可见状态。</string>
     <string name="unlock_highest_bitrate_title">解锁最高码率</string>
-    <string name="unlock_highest_bitrate_summary">自动强制请求 QN 127 最高画质，按 8K＞杜比视界＞HDR＞4K 的优先级选择服务端返回的最高档与最高码率候选，并在播放器控制栏提供带账号水印的视频统计信息。</string>
+    <string name="unlock_highest_bitrate_summary">自动强制请求 QN 127 最高画质，按 8K＞杜比视界＞HDR＞4K 的优先级选择服务端返回的最高档与最高码率候选，并在视频简介提供带账号水印的响应候选统计信息（非实时解码状态）。</string>
     <string name="avoid_hdr_dolby_title">避免 HDR / 杜比视界</string>
     <string name="avoid_hdr_dolby_summary">需先开启“解锁最高码率”。跳过 HDR 与杜比视界档位，改选同级最高的 SDR 画质（适合非 HDR 屏幕），8K 不受影响。</string>
     <string name="fake_wifi_title">伪装 Wi-Fi</string>
@@ -655,8 +655,8 @@
     <string name="mbgeb_about_summary">以下功能移植自同名浏览器脚本，均为实验性改动，默认关闭。</string>
     <string name="mbgeb_p2p_disable_title">关闭 P2P 与 PCDN</string>
     <string name="mbgeb_p2p_disable_summary">禁止播放器参与 P2P 上传与 PCDN 下载，减少上行带宽占用、流量与耗电。</string>
-    <string name="mbgeb_prefer_hardware_decoder_title">过滤只能软解的编码</string>
-    <string name="mbgeb_prefer_hardware_decoder_summary">过滤掉本机只能软解的视频编码（多数机型上是 AV1），降低播放时的耗电与发热。</string>
+    <string name="mbgeb_prefer_hardware_decoder_title">尽可能优先硬件解码</string>
+    <string name="mbgeb_prefer_hardware_decoder_summary">扩展普通视频的硬解器检测与选择，同规格候选优先硬解；不自动提升画质，不删除软解备选，保留官方失败回退。HDR、DRM、透明视频等特殊路径保持原生。更改对后续新建播放项生效，不能保证所有视频硬解或必定播放成功。</string>
     <string name="mbgeb_parallel_download_title">多主机并行下载</string>
     <string name="mbgeb_parallel_download_summary">从多台 CDN 同时下载同一文件，加快大文件下载速度。\n注意：会成倍占用带宽，蜂窝网络下自动关闭。</string>
     <string name="mbgeb_live_original_quality_title">直播强制原画</string>

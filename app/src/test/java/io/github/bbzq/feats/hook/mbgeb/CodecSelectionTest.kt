@@ -30,6 +30,23 @@ class CodecSelectionTest {
     }
 
     @Test
+    fun keepsOfficialHardwareNameInsteadOfClaimingFastest() {
+        assertEquals("vendor.b", CodecSelection.chooseHardwareName(listOf("vendor.a", "vendor.b"), "vendor.b"))
+    }
+
+    @Test
+    fun ambiguousHardwareDoesNotUseEnumerationOrder() {
+        assertEquals(null, CodecSelection.chooseHardwareName(listOf("vendor.a", "vendor.b"), null))
+        assertEquals(null, CodecSelection.chooseHardwareName(listOf("vendor.a", "vendor.b"), "software"))
+    }
+
+    @Test
+    fun singleHardwareComponentCanBeSelected() {
+        assertEquals("vendor.a", CodecSelection.chooseHardwareName(listOf("vendor.a", "vendor.a"), null))
+        assertEquals(null, CodecSelection.chooseHardwareName(emptyList(), null))
+    }
+
+    @Test
     fun testEmptyInputStaysEmpty() {
         assertEquals(emptySet<Long>(), CodecSelection.narrow(emptySet(), emptySet()))
         assertEquals(emptySet<Long>(), CodecSelection.narrow(emptySet(), setOf(CodecSelection.CODEC_AVC)))

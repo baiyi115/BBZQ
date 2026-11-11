@@ -6,11 +6,10 @@ import io.github.bbzq.feats.BaseRoamingHook
 import io.github.bbzq.feats.HostAccountResolver
 import io.github.bbzq.feats.callMethod
 import io.github.bbzq.feats.allMethods
+import io.github.bbzq.feats.symbol.restoreAvailable
 import io.github.bbzq.feats.getObjectField
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
-import io.github.bbzq.feats.hook.mbgeb.CodecCapability
-import io.github.bbzq.feats.hook.mbgeb.CodecSelection
 import java.lang.reflect.Method
 
 class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook(env) {
@@ -28,30 +27,16 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         if (env.processName != env.packageName) return
         trialQualityEnabled = isTrialEnabled()
         highestBitrateEnabled = isHighestBitrateEnabled()
-        val videoDownloadEnabled = ModuleSettings.isVideoDownloadEnabled(prefs)
-        val preferHardwareDecoder = ModuleSettings.isPreferHardwareDecoderEnabled(prefs)
 
-        if (!trialQualityEnabled && !highestBitrateEnabled && !videoDownloadEnabled && !preferHardwareDecoder) {
-            log("startHook: PlayView quality pipeline and video download disabled")
-            return
-        }
-
-        if (preferHardwareDecoder) {
-            // 按本机硬解能力筛掉只能软解的编码（多数机型上是 AV1）
-            val allowed = CodecCapability.usableCodecIds(CodecSelection.VIDEO_CODEC_IDS)
-            highestBitrate.allowedCodecIds = allowed
-            log("startHook: hardware-decodable codecs=$allowed")
-        }
-        if (highestBitrateEnabled) {
-            highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
-        }
+        // Install response/diagnostic entry points independently of current switches. The per-response
+        // snapshot below controls behavior, including changes made after process start.
         env.hostContext?.let { context ->
             StorySceneDetector.register(context)
             VideoStatsOverlayController.getOrCreate(context)
         }
 
         // Hook TextView to append Download Link to description when enabled
-        if (videoDownloadEnabled) {
+        run {
             runCatching {
                 val setTextMethod = android.widget.TextView::class.java.getMethod("setText", CharSequence::class.java, android.widget.TextView.BufferType::class.java)
                 env.hookBefore(setTextMethod) { param ->
@@ -80,9 +65,11 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
 
                     val resName = runCatching { tv.resources.getResourceEntryName(tv.id) }.getOrNull()?.lowercase() ?: return@hookBefore
                     if (!isTargetDescResName(resName)) return@hookBefore
+                    val download = ModuleSettings.isVideoDownloadEnabled(prefs)
+                    if (!download && !isHighestBitrateEnabled() && !ModuleSettings.isPreferHardwareDecoderEnabled(prefs)) return@hookBefore
 
                     val textStr = text.toString()
-                    if (textStr.isNotBlank() && !textStr.contains("下载视频")) {
+                    if (textStr.isNotBlank() && !textStr.contains("视频数据")) {
                         tv.isFocusable = true
                         tv.isClickable = true
                         tv.isEnabled = true
@@ -124,8 +111,10 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
 
                         spannable.append(" ")
                         spannable.append(statsSpan)
-                        spannable.append(" | ")
-                        spannable.append(dlSpan)
+                        if (download) {
+                            spannable.append(" | ")
+                            spannable.append(dlSpan)
+                        }
                         spannable.append(" ")
                         param.args[0] = spannable
                     }
@@ -133,15 +122,18 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
             }.onFailure { log("Failed to hook TextView.setText for download link", it) }
         }
 
-        if (!trialQualityEnabled && !highestBitrateEnabled && !preferHardwareDecoder) {
-            log("startHook: PlayView quality pipeline disabled (video download hook active)")
+        val descriptor = env.symbols?.tryFreeQuality ?: run {
+            log("startHook: PlayView descriptors unavailable")
             return
         }
-        
-        val symbols = env.symbols?.tryFreeQuality?.restore(classLoader) ?: run {
-            log("startHook: TryFreeQuality skipped because symbols are unavailable")
-            return
-        }
+        // UI/trial recovery must not invalidate independent playback policy entries.
+        val symbols = io.github.bbzq.feats.symbol.RestoredTryFreeQualitySymbols(
+            playViewMethods = descriptor.playViewMethods.restoreAvailable(classLoader),
+            getIsNeedTrialMethods = descriptor.getIsNeedTrialMethods.restoreAvailable(classLoader),
+            setIsNeedTrialMethods = descriptor.setIsNeedTrialMethods.restoreAvailable(classLoader),
+            getVipFreeMethods = descriptor.getVipFreeMethods.restoreAvailable(classLoader),
+            getNeedVipMethods = descriptor.getNeedVipMethods.restoreAvailable(classLoader),
+        )
 
         var requestHooks = 0
         var responseHooks = 0
@@ -273,7 +265,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         val trial = isTrialEnabled()
         val highest = isHighestBitrateEnabled()
         val preferHardware = ModuleSettings.isPreferHardwareDecoderEnabled(prefs)
-        if (!trial && !highest && !preferHardware) return
+        if (!trial && !highest && !preferHardware && !ModuleSettings.isVideoDownloadEnabled(prefs)) return
 
         runCatching {
             val videoInfo = target.callMethod("getVideoInfo") ?: target.callMethod("getVodInfo")
@@ -289,21 +281,14 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                 clearStreamVipMarkers(target.callMethod("getVodInfo"))
                 clearStreamVipMarkers(target.callMethod("getViewInfo"))
             }
-            if (highest) {
-                highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
-            }
-            // 只开硬件解码筛选时不走画质提升，免得带出用户没开的画质变化
-            if (preferHardware && !highest) {
-                highestBitrate.applyCodecFilterOnly(target)
-            }
+            // Stateless response policy: disabling hardware preference leaves no stale allowed set.
+            if (preferHardware) highestBitrate.preferHardware(target)
             val stats = if (highest) {
-                highestBitrate.preferHighestBitrate(target)
+                highestBitrate.preferHighestBitrate(target, ModuleSettings.isAvoidHdrDolbyEnabled(prefs))
             } else {
                 highestBitrate.readStats(target)
             }
-            if (stats != null) {
-                VideoStatsOverlayController.instance?.update(stats)
-            }
+            VideoStatsOverlayController.instance?.update(stats)
         }.onFailure {
             log("PlayView quality response processing failed at ${target.javaClass.name}", it)
         }
@@ -353,7 +338,7 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
         if (StorySceneDetector.isStoryForeground() || StorySceneDetector.isStoryRequest(request)) return
         val trial = isTrialEnabled()
         val highest = isHighestBitrateEnabled()
-        if (!trial && !highest) return
+        if (!trial && !highest && !ModuleSettings.isPreferHardwareDecoderEnabled(prefs) && !ModuleSettings.isVideoDownloadEnabled(prefs)) return
 
         runCatching {
             val bvid = (request.callMethod("getBvid") as? String)?.takeIf { it.isNotBlank() }
@@ -378,7 +363,6 @@ class TryFreeQualityHook(env: io.github.bbzq.feats.RoamingEnv) : BaseRoamingHook
                 }
             }
             if (highest) {
-                highestBitrate.avoidHdrDolby = ModuleSettings.isAvoidHdrDolbyEnabled(prefs)
                 highestBitrate.prepareRequest(request)
             }
         }.onFailure {

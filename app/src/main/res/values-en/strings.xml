@@ -25,7 +25,7 @@
     <string name="unlock_video_features_ui_title">Sync trial UI</string>
     <string name="unlock_video_features_ui_summary">Syncs badges, hints and the trial display layer. Mostly affects what the UI shows.</string>
     <string name="unlock_highest_bitrate_title">Unlock highest bitrate</string>
-    <string name="unlock_highest_bitrate_summary">Always requests QN 127, picks the highest tier the server returns (8K &gt; Dolby Vision &gt; HDR &gt; 4K) with the highest bitrate, and adds a video stats panel with an account watermark to the player controls.</string>
+    <string name="unlock_highest_bitrate_summary">Always requests QN 127, picks the highest tier the server returns (8K &gt; Dolby Vision &gt; HDR &gt; 4K) with the highest bitrate, and adds response candidate statistics with an account watermark to the video description (not live decoder status).</string>
     <string name="avoid_hdr_dolby_title">Avoid HDR / Dolby Vision</string>
     <string name="avoid_hdr_dolby_summary">Requires \"Unlock highest bitrate\". Skips HDR and Dolby Vision tiers and picks the best SDR quality of the same level (for non-HDR screens). 8K is not affected.</string>
     <string name="fake_wifi_title">Pretend to be on Wi-Fi</string>

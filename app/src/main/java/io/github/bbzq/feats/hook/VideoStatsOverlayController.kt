@@ -65,14 +65,19 @@ internal class VideoStatsOverlayController(
         identities.record(bvid, cid)
     }
 
-    fun update(stats: VideoStreamStats) {
+    fun update(stats: VideoStreamStats?) {
         latestStats = stats
         mainHandler.post {
             val activity = topActivity.get()?.takeUnless { it.isFinishing || it.isDestroyed }
                 ?: return@post
             if (!isVideoDetailActivity(activity)) return@post
             runCatching {
-                activeStatsContent.get()?.let { renderStats(it, stats) }
+                activeStatsContent.get()?.let { content ->
+                    if (stats != null) renderStats(content, stats) else {
+                        content.removeAllViews()
+                        content.addView(statLine(activity, "状态", "暂无本次响应候选信息"))
+                    }
+                }
             }.onFailure { reportFailure("failed to update statistics overlay", it) }
         }
     }
@@ -323,13 +328,19 @@ internal class VideoStatsOverlayController(
     private fun renderStats(content: LinearLayout, stats: VideoStreamStats) {
         val activity = content.context as? Activity ?: return
         content.removeAllViews()
-        content.addView(sectionTitle(activity, "视频信息", 22f))
-        content.addView(sectionTitle(activity, "视频", 19f))
-        content.addView(statLine(activity, "请求画质", "QN 127（最高档）"))
-        content.addView(statLine(activity, "实际分辨率", resolution(stats)))
+        content.addView(sectionTitle(activity, "最近响应候选（非实时播放状态）", 22f))
+        content.addView(statLine(activity, "实际解码器", "未读取，候选编码不代表硬解成功"))
+        content.addView(sectionTitle(activity, "视频候选", 19f))
+        content.addView(statLine(activity, "候选分辨率", resolution(stats)))
         content.addView(statLine(activity, "流元数据码率", bitrate(stats.bandwidth)))
-        content.addView(statLine(activity, "实际画质 QN", stats.quality.toString()))
-        content.addView(statLine(activity, "编码 ID", codecLabel(stats.codecId)))
+        content.addView(statLine(activity, "响应所选 QN", stats.quality.toString()))
+        content.addView(statLine(activity, "视频编码", when (stats.codecId) {
+            7L -> "AVC / H.264"
+            12L -> "HEVC / H.265"
+            13L -> "AV1"
+            14L -> "VVC / H.266"
+            else -> "未知（ID ${stats.codecId}）"
+        }))
         if (stats.frameRate.isNotBlank()) content.addView(statLine(activity, "帧率", stats.frameRate))
 
         content.addView(sectionTitle(activity, "音频", 19f))

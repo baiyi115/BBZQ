@@ -22,6 +22,7 @@ import io.github.bbzq.feats.hook.DownloadThreadHook
 import io.github.bbzq.feats.hook.DynamicPageHook
 import io.github.bbzq.feats.hook.TeenagersModeHook
 import io.github.bbzq.feats.hook.TryFreeQualityHook
+import io.github.bbzq.feats.hook.mbgeb.HardwareDecoderHook
 import io.github.bbzq.feats.hook.VideoQualityHook
 import io.github.bbzq.feats.hook.FakeWifiHook
 import io.github.bbzq.feats.hook.FreeCopyHook
@@ -251,6 +252,7 @@ object RoamingRuntime {
                 ::LiveRoomVerticalSwipeHook,
                 ::MediaSessionFixHook,
                 ::VideoEndRecommendHook,
+                ::HardwareDecoderHook,
                 ::P2pDisableHook,
                 ::LiveQualityHook,
                 ::LiveBackupUrlHook,

@@ -13,18 +13,14 @@ object CodecSelection {
     const val CODEC_HEVC = 12L
     const val CODEC_AV1 = 13L
 
-    /** B 站 DASH 视频流可能出现的全部 codecid。 */
+    /** 既有集合策略的常用编码；不代表全部 DASH 编码（例如 VVC = 14）。 */
     val VIDEO_CODEC_IDS = setOf(CODEC_AVC, CODEC_HEVC, CODEC_AV1)
 
-    /**
-     * 从 [all] 里挑出有硬件解码器的 codecid。
-     *
-     * 两种情况都返回 [all]：
-     * - [supported] 为空：问不到本机能力（清单为空或查询失败）
-     * - 交集为空：能力信息与实际流不匹配
-     *
-     * 这两种情况都不该把流筛光，那会直接黑屏；宁可退回"不做筛选"。
-     */
+    /** No format-bound evidence: keep an official hardware name or a single unambiguous component. */
+    fun chooseHardwareName(names: List<String>, preferred: String?): String? =
+        names.firstOrNull { it == preferred } ?: names.distinct().singleOrNull()
+
+    /** Empty/unknown capability or no intersection keeps the original codec set as fallback. */
     fun narrow(all: Set<Long>, supported: Set<Long>): Set<Long> {
         if (supported.isEmpty()) return all
         val kept = all.filterTo(HashSet()) { it in supported }
