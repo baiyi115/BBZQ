@@ -24,6 +24,13 @@ jobs:
           ref: master
           fetch-depth: 0
 
+      - name: Restore conflict state
+        uses: actions/cache/restore@v4
+        with:
+          path: .sync-state
+          key: sync-state-${{ github.run_id }}
+          restore-keys: sync-state-
+
       - name: Merge upstream master
         id: merge
         run: |
@@ -32,21 +39,38 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/HSSkyBoy/BBZQ.git
           git fetch --no-tags upstream master
+          upstream_sha=$(git rev-parse upstream/master)
           if git merge-base --is-ancestor upstream/master HEAD; then
             echo "status=current" >> "$GITHUB_OUTPUT"
             exit 0
           fi
+          if [ -f .sync-state/conflict ] && [ "$(<.sync-state/conflict)" = "$upstream_sha" ]; then
+            echo "::warning::上游 $upstream_sha 仍与本地提交冲突，跳过本次同步"
+            echo "上游 \`$upstream_sha\` 仍与本地提交冲突，已跳过本次同步。" >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          rm -f .sync-state/conflict
           if ! git merge --no-edit upstream/master; then
             git merge --abort
+            mkdir -p .sync-state
+            echo "$upstream_sha" > .sync-state/conflict
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
             {
               echo "### 上游同步失败"
               echo ""
-              echo "上游改动与本地提交冲突，自动合并已中止。"
+              echo "上游 \`$upstream_sha\` 与本地提交冲突，自动合并已中止。"
               echo "本地执行 \`git fetch upstream && git merge upstream/master\` 解决后推送 master。"
             } >> "$GITHUB_STEP_SUMMARY"
             exit 1
           fi
           echo "status=merged" >> "$GITHUB_OUTPUT"
+
+      - name: Save conflict state
+        if: failure() && steps.merge.outputs.status == 'conflict'
+        uses: actions/cache/save@v4
+        with:
+          path: .sync-state
+          key: sync-state-${{ github.run_id }}
 
       - name: Set up JDK
         if: steps.merge.outputs.status == 'merged'
