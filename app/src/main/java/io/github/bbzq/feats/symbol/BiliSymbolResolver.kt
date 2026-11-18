@@ -28,7 +28,9 @@ import org.luckypray.dexkit.query.FindClass
 import org.luckypray.dexkit.query.FindMethod
 import org.luckypray.dexkit.query.enums.StringMatchType
 import org.luckypray.dexkit.query.matchers.ClassMatcher
+import org.luckypray.dexkit.query.matchers.FieldMatcher
 import org.luckypray.dexkit.query.matchers.MethodMatcher
+import org.luckypray.dexkit.query.matchers.UsingFieldMatcher
 import org.json.JSONObject
 import java.io.File
 import java.lang.reflect.Field
@@ -1244,11 +1246,12 @@ object BiliSymbolResolver {
         }?.apply { isAccessible = true }
             ?: return SymbolScanResult.Missing("theme skin list method not found")
 
-        // 主题处理器已移到混淆包(与颜色表 helper 同包),一并搜索
-        val themeProcessorPackages = listOf("tv.danmaku.bili.ui.theme", "${themeHelperClass.name.substringBeforeLast('.')}.")
-        val themeProcessorClass = findClassNamesByNameContains(bridge, themeProcessorPackages)
-            .mapNotNull(classLoader::loadClassOrNull)
-            .firstOrNull { type -> type.declaredFields.count { it.type == skinListClass } > 1 }
+        // 按預設主題檔名定位，不依賴包名（9.19 起位於根包）
+        val themeProcessorClass = findDeclaredMethods(bridge, classLoader) {
+            matcher(MethodMatcher.create().usingStrings(THEME_DEFAULT_LIST_FILE))
+        }.map { it.declaringClass }
+            .distinctBy { it.name }
+            .firstOrNull { type -> type.safeDeclaredFields().count { it.type == skinListClass } > 1 }
             ?: return SymbolScanResult.Missing("theme processor class not found")
         val themeResetMethods = findDeclaredMethods(bridge, classLoader) {
             matcher(
@@ -1267,9 +1270,20 @@ object BiliSymbolResolver {
             return SymbolScanResult.Missing("theme reset methods not found")
         }
 
-        val themeListClickClass = themeStoreActivity.declaredClasses.firstOrNull {
+        // 9.19 有多個點擊監聽，只有主題列表項的 onClick 會讀 BiliSkin.mId
+        val clickListeners = themeStoreActivity.declaredClasses.filter {
             it.interfaces.contains(View.OnClickListener::class.java)
-        } ?: return SymbolScanResult.Missing("theme list click listener not found")
+        }
+        val skinIdReaders = findDeclaredMethods(bridge, classLoader) {
+            matcher(
+                MethodMatcher.create().name("onClick").addUsingField(
+                    UsingFieldMatcher().field(FieldMatcher.create().declaredClass(skinClass).name("mId")),
+                ),
+            )
+        }.map { it.declaringClass }.toSet()
+        val themeListClickClass = clickListeners.firstOrNull { it in skinIdReaders }
+            ?: clickListeners.firstOrNull()
+            ?: return SymbolScanResult.Missing("theme list click listener not found")
 
         val themeNameClass = findThemeNameClass(classLoader, currentBridge)
             ?: return SymbolScanResult.Missing("theme name map class not found")
@@ -1278,10 +1292,12 @@ object BiliSymbolResolver {
         }?.apply { isAccessible = true }
             ?: return SymbolScanResult.Missing("theme name map field not found")
 
-        val builtInThemeCandidate = findClassNamesByNameContains(bridge, listOf("theme", "garb"))
+        // 優先按 GarbThemeColors 構造函數的調用者所讀的靜態 Map 定位（9.19 為 pia0.c），舊版再按類名搜尋
+        val builtInThemeCandidate = themeColorsClass?.let { findBuiltInThemeMap(currentBridge, classLoader, it) }
+            ?: findClassNamesByNameContains(bridge, listOf("theme", "garb"))
             .mapNotNull(classLoader::loadClassOrNull)
             .firstNotNullOfOrNull { type ->
-                type.declaredFields.firstOrNull {
+                type.safeDeclaredFields().firstOrNull {
                     it.type == Map::class.java && Modifier.isStatic(it.modifiers)
                 }?.apply { isAccessible = true }?.let { type to it }
             }
@@ -1325,6 +1341,23 @@ object BiliSymbolResolver {
         return SymbolScanResult.Found(symbols, themeStoreActivity.name, symbols.evidence)
     }
 
+    private fun findBuiltInThemeMap(
+        bridge: DexKitBridge,
+        classLoader: ClassLoader,
+        colorsClass: Class<*>,
+    ): Pair<Class<*>, java.lang.reflect.Field>? = runCatching {
+        bridge.findMethod(
+            FindMethod.create().matcher(
+                MethodMatcher.create().addInvoke(MethodMatcher.create().declaredClass(colorsClass).name("<init>")),
+            ),
+        ).asSequence()
+            .flatMap { it.usingFields.asSequence() }
+            .mapNotNull { runCatching { it.field.getFieldInstance(classLoader) }.getOrNull() }
+            .firstOrNull { it.type == Map::class.java && Modifier.isStatic(it.modifiers) }
+            ?.apply { isAccessible = true }
+            ?.let { it.declaringClass to it }
+    }.getOrNull()
+
     private fun findThemeNameClass(classLoader: ClassLoader, bridge: DexKitBridge): Class<*>? {
         val candidates = bridge.findClass(
             FindClass.create().matcher(ClassMatcher.create().usingStrings(".garb.GARB_CHANGE")),
@@ -1333,12 +1366,12 @@ object BiliSymbolResolver {
         ).map { it.name }.toList()
         val types = candidates.asSequence().distinct().mapNotNull(classLoader::loadClassOrNull)
             .filter { type ->
-                type.declaredFields.any { Modifier.isStatic(it.modifiers) && it.type == Map::class.java }
+                type.safeDeclaredFields().any { Modifier.isStatic(it.modifiers) && it.type == Map::class.java }
             }
             .toList()
         // "white" 在新版命中多个颜色名映射(如 HtmlColors),按主题 id 映射内容挑出真正的主题名表
         return types.firstOrNull { type ->
-            type.declaredFields.any { field ->
+            type.safeDeclaredFields().any { field ->
                 Modifier.isStatic(field.modifiers) && field.type == Map::class.java &&
                     runCatching {
                         field.isAccessible = true
@@ -2281,8 +2314,14 @@ object BiliSymbolResolver {
             method.name == "b" &&
                 method.returnType == Void.TYPE &&
                 method.parameterCount == 1 &&
-                method.parameterTypes[0].name.startsWith(STORY_TAB_PACKAGE_PREFIX)
+                isStoryIntroCommentTabParameter(method.parameterTypes[0])
         }
+
+    private fun isStoryIntroCommentTabParameter(type: Class<*>): Boolean =
+        type.name.startsWith(STORY_TAB_PACKAGE_PREFIX) ||
+            type.allFields().any { field ->
+                field.type.name.startsWith(STORY_TAB_PACKAGE_PREFIX) || field.type.name == STORY_DETAIL
+            }
 
     private fun isStoryPagerListMethod(method: Method): Boolean =
         method.returnType == Void.TYPE &&
@@ -2568,13 +2607,12 @@ object BiliSymbolResolver {
         }?.apply { isAccessible = true }
 
         val mainFragmentClass = classLoader.loadClassOrNull(HOME_MAIN_FRAGMENT)
-        val defaultWordClass = classLoader.loadClassOrNull(HOME_DEFAULT_SEARCH_WORD_CLASS)
-        val defaultWordMethods = if (mainFragmentClass != null && defaultWordClass != null) {
+        val defaultWordMethods = if (mainFragmentClass != null) {
             mainFragmentClass.allMethods()
                 .filter { method ->
                     method.returnType == Void.TYPE &&
                         method.parameterCount == 1 &&
-                        method.parameterTypes[0] == defaultWordClass &&
+                        isHomeDefaultSearchWordType(method.parameterTypes[0]) &&
                         !Modifier.isStatic(method.modifiers) &&
                         !Modifier.isAbstract(method.modifiers)
                 }
@@ -2607,6 +2645,11 @@ object BiliSymbolResolver {
         )
         return SymbolScanResult.Found(symbols, "HomeTopBarPurify", symbols.evidence, hookPoints)
     }
+
+    internal fun isHomeDefaultSearchWordType(type: Class<*>): Boolean =
+        type.name == HOME_DEFAULT_SEARCH_WORD_CLASS || (type.isInterface && HOME_DEFAULT_SEARCH_WORD_ACCESSORS.all { accessor ->
+            type.allMethods().any { it.name == accessor && it.parameterCount == 0 }
+        })
 
     private fun scanBottomBar(
         classLoader: ClassLoader,
@@ -4293,6 +4336,10 @@ object BiliSymbolResolver {
         }
     }
 
+    /** 欄位型別可能無法解析（例如宿主內附的華為 SDK 缺類），此時視為沒有欄位，不讓整個掃描失敗。 */
+    private fun Class<*>.safeDeclaredFields(): List<java.lang.reflect.Field> =
+        runCatching { declaredFields.toList() }.getOrDefault(emptyList())
+
     private fun findClassNamesByNameContains(
         bridge: () -> DexKitBridge?,
         terms: List<String>,
@@ -4564,8 +4611,8 @@ object BiliSymbolResolver {
     private val STORY_COMMENT_OUTER_CANDIDATES = listOf("StoryCommentHelper", "C", "B") + ('D'..'Z').map { it.toString() }
     private val STORY_COMMENT_VERTICAL_CONTAINER_CLASSES = (listOf("StoryCommentHelper\$VerticalContainerV2", "C\$f", "B\$f") + ('D'..'Z').map { "$it\$f" }).map { "com.bilibili.video.story.action.$it" }.toTypedArray()
     private val STORY_COMMENT_LANDSCAPE_CONTAINER_CLASSES = (listOf("StoryCommentHelper\$d", "C\$d", "B\$d") + ('D'..'Z').map { "$it\$d" }).map { "com.bilibili.video.story.action.$it" }.toTypedArray()
-    // 混淆字母随版本漂移(9.15 为 t,9.17 为 w),已知名称优先,其余按结构逐个检查
-    private val STORY_INTRO_COMMENT_SERVICES = (listOf("w", "t", "p") + ('a'..'z').map { it.toString() })
+    // 混淆字母随版本漂移(9.15 为 t,9.17 为 w,9.19 为 q),已知名称优先,其余按结构逐个检查
+    private val STORY_INTRO_COMMENT_SERVICES = (listOf("q", "w", "t", "p") + ('a'..'z').map { it.toString() })
         .distinct()
         .map { "com.bilibili.video.story.action.widget.comment.$it" }
     private const val STORY_TAB_PACKAGE_PREFIX = "com.bilibili.video.story.tab."
@@ -4605,6 +4652,8 @@ object BiliSymbolResolver {
     )
     private const val HOME_MAIN_FRAGMENT = "tv.danmaku.bili.ui.main2.MainFragment"
     private const val HOME_DEFAULT_SEARCH_WORD_CLASS = "com.bilibili.app.comm.list.common.api.b"
+    private val HOME_DEFAULT_SEARCH_WORD_ACCESSORS =
+        listOf("getDefaultWordGoto", "getDefaultWordType", "getShowFront", "getFlashScreenQueryId")
     private val BOTTOM_TAB_HOST_CLASSES = setOf(
         "com.bilibili.lib.homepage.widget.TabHost",
         "com.bilibili.p5690lib.p5708homepage.widget.TabHost",
@@ -4672,6 +4721,7 @@ object BiliSymbolResolver {
         "com.bilibili.p4439app.comment3.viewmodel.CommentViewModel",
     )
     private val COMMENT_ACTION_BASE_CLASSES = arrayOf(
+        "wtt",
         "Kj.AbstractC8070c",
         "Kj.c",
         "Wk.AbstractC24337c",

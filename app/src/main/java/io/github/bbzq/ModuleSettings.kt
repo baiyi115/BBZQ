@@ -12,6 +12,7 @@ object ModuleSettings {
     const val KEY_SKIP_REWARD_AD_ENABLED = "skip_reward_ad"
     const val KEY_BLOCK_TEENAGERS_MODE_DIALOG_ENABLED = "block_teenagers_mode_dialog"
     const val KEY_BLOCK_UPDATE_ENABLED = "block_update_enabled"
+    const val KEY_BLOCK_P2P_ENABLED = "block_p2p_enabled"
     const val KEY_SKIP_SPLASH_AD_ENABLED = "skip_splash_ad_enabled"
     const val KEY_SPLASH_AUTO_NIGHT_ENABLED = "splash_auto_night_enabled"
     const val KEY_SKIP_VIDEO_AD_ENABLED = "skip_video_ad_enabled"
@@ -130,6 +131,7 @@ object ModuleSettings {
     const val LANGUAGE_EN = "en"
     const val KEY_CUSTOM_THEME_ENABLED = "custom_theme_enabled"
     const val KEY_CUSTOM_THEME_COLOR = "custom_theme_color"
+    const val KEY_CUSTOM_THEME_MONET = "custom_theme_monet"
     const val KEY_CUSTOM_SKIN_ENABLED = "custom_skin_enabled"
     const val KEY_CUSTOM_SKIN_JSON = "custom_skin_json"
     const val KEY_CUSTOM_FONT_SCALE_ENABLED = "custom_font_scale_enabled"
@@ -164,6 +166,7 @@ object ModuleSettings {
     const val KEY_RESOLVER_CDN_CN = "resolver_cdn_cn"
     const val KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS = "sea_unlock_relax_play_limits"
     const val KEY_FULL_NUMBER_FORMAT_ENABLED = "full_number_format_enabled"
+    const val KEY_SPACE_FIX_ENABLED = "space_fix_enabled"
     const val KEY_UNLOCK_COMMENT_GIF_ENABLED = "unlock_comment_gif_enabled"
     const val KEY_LAST_ACCESS_KEY = "last_access_key"
     const val KEY_HOST_ACCOUNT_UID = "host_account_uid"
@@ -227,6 +230,7 @@ object ModuleSettings {
     const val KEY_RUNTIME_PATCH_MODE = "runtime_patch_mode"
     const val KEY_RUNTIME_PROCESS_NAME = "runtime_process_name"
     const val KEY_RUNTIME_LAST_UPDATE_TIME = "runtime_last_update_time"
+    const val KEY_ROOT_GATE_VERIFIED = "root_gate_verified"
     const val KEY_SYMBOL_SCAN_STATUS_SUMMARY = "symbol_scan_status_summary"
     const val KEY_SYMBOL_SCAN_STATUS_REPORT = "symbol_scan_status_report"
     const val KEY_SYMBOL_SCAN_STATUS_UPDATED_AT = "symbol_scan_status_updated_at"
@@ -300,6 +304,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_SKIP_REWARD_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SKIP_REWARD_AD_ENABLED, false) },
         ExportableConfigSpec(KEY_BLOCK_TEENAGERS_MODE_DIALOG_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_TEENAGERS_MODE_DIALOG_ENABLED, false) },
         ExportableConfigSpec(KEY_BLOCK_UPDATE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_UPDATE_ENABLED, false) },
+        ExportableConfigSpec(KEY_BLOCK_P2P_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_P2P_ENABLED, false) },
         ExportableConfigSpec(KEY_SKIP_SPLASH_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SKIP_SPLASH_AD_ENABLED, true) },
         ExportableConfigSpec(KEY_SPLASH_AUTO_NIGHT_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SPLASH_AUTO_NIGHT_ENABLED, false) },
         ExportableConfigSpec(KEY_SKIP_VIDEO_AD_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SKIP_VIDEO_AD_ENABLED, false) },
@@ -409,6 +414,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_ENHANCE_LONG_PRESS_COPY_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_ENHANCE_LONG_PRESS_COPY_ENABLED, false) },
         ExportableConfigSpec(KEY_CUSTOM_BOTTOM_BAR_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_BOTTOM_BAR_ENABLED, false) },
         ExportableConfigSpec(KEY_CUSTOM_THEME_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_THEME_ENABLED, false) },
+        ExportableConfigSpec(KEY_CUSTOM_THEME_MONET, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_THEME_MONET, false) },
         ExportableConfigSpec(KEY_CUSTOM_SKIN_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_SKIN_ENABLED, false) },
         ExportableConfigSpec(KEY_CUSTOM_FONT_SCALE_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_CUSTOM_FONT_SCALE_ENABLED, false) },
         ExportableConfigSpec(KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_BLOCK_ACTIVITY_META_STICKER_ENABLED, false) },
@@ -425,6 +431,7 @@ object ModuleSettings {
         ExportableConfigSpec(KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_UNLOCK_RELAX_PLAY_LIMITS, true) },
         ExportableConfigSpec(KEY_SEA_RESOLVER_SEND_ACCESS_KEY, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SEA_RESOLVER_SEND_ACCESS_KEY, false) },
         ExportableConfigSpec(KEY_FULL_NUMBER_FORMAT_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_FULL_NUMBER_FORMAT_ENABLED, false) },
+        ExportableConfigSpec(KEY_SPACE_FIX_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_SPACE_FIX_ENABLED, true) },
         ExportableConfigSpec(KEY_UNLOCK_COMMENT_GIF_ENABLED, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_UNLOCK_COMMENT_GIF_ENABLED, false) },
         ExportableConfigSpec(KEY_HIDE_DESKTOP_ICON, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_HIDE_DESKTOP_ICON, false) },
         ExportableConfigSpec(KEY_ACCEPT_PRERELEASE_UPDATE, ExportableValueType.BOOLEAN) { it.getBoolean(KEY_ACCEPT_PRERELEASE_UPDATE, false) },
@@ -539,6 +546,9 @@ object ModuleSettings {
 
     fun isBlockTeenagersModeDialogEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_BLOCK_TEENAGERS_MODE_DIALOG_ENABLED, false)
+
+    fun isBlockP2pEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_BLOCK_P2P_ENABLED, false)
 
     fun isBlockUpdateEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_BLOCK_UPDATE_ENABLED, false)
@@ -1056,6 +1066,9 @@ object ModuleSettings {
     fun isCustomThemeEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_THEME_ENABLED, false)
 
+    fun isRootGateVerified(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_ROOT_GATE_VERIFIED, false)
+
     fun getAppLanguage(prefs: SharedPreferences): String =
         prefs.getString(KEY_APP_LANGUAGE, LANGUAGE_AUTO).orEmpty().ifBlank { LANGUAGE_AUTO }
 
@@ -1066,6 +1079,21 @@ object ModuleSettings {
     fun getCustomThemeColor(prefs: SharedPreferences): Int =
         prefs.getInt(KEY_CUSTOM_THEME_COLOR, DEFAULT_CUSTOM_THEME_COLOR)
             .let { color -> (color and 0x00FFFFFF) or 0xFF000000.toInt() }
+
+    /** 系統動態取色（莫奈）需要 Android 12。 */
+    val isMonetSupported: Boolean
+        get() = android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S
+
+    fun isCustomThemeMonetEnabled(prefs: SharedPreferences): Boolean =
+        isMonetSupported && prefs.getBoolean(KEY_CUSTOM_THEME_MONET, false)
+
+    /** 實際套用的主題色：開啟莫奈時取系統強調色，否則取手動設定的顏色。 */
+    fun getEffectiveCustomThemeColor(context: Context, prefs: SharedPreferences): Int {
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.S && isCustomThemeMonetEnabled(prefs)) {
+            return context.getColor(android.R.color.system_accent1_500) or 0xFF000000.toInt()
+        }
+        return getCustomThemeColor(prefs)
+    }
 
     fun isCustomSkinEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_CUSTOM_SKIN_ENABLED, false)
@@ -1213,6 +1241,9 @@ object ModuleSettings {
 
     fun isFullNumberFormatEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_FULL_NUMBER_FORMAT_ENABLED, false)
+
+    fun isSpaceFixEnabled(prefs: SharedPreferences): Boolean =
+        prefs.getBoolean(KEY_SPACE_FIX_ENABLED, false)
 
     fun isUnlockCommentGifEnabled(prefs: SharedPreferences): Boolean =
         prefs.getBoolean(KEY_UNLOCK_COMMENT_GIF_ENABLED, false)

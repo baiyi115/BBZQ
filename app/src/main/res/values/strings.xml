@@ -39,7 +39,7 @@
     <string name="avoid_hdr_dolby_title">避免 HDR / 杜比视界</string>
     <string name="avoid_hdr_dolby_summary">需先开启“解锁最高码率”。跳过 HDR 与杜比视界档位，改选同级最高的 SDR 画质（适合非 HDR 屏幕），8K 不受影响。</string>
     <string name="fake_wifi_title">伪装 Wi-Fi</string>
-    <string name="fake_wifi_summary">强制解除移动数据/蜂窝流量限制，防止在非 Wi-Fi 环境下高码率与 4K 画质自动回退到 1080P。</string>
+    <string name="fake_wifi_summary">强制解除移动数据/蜂窝流量限制，防止在非 Wi-Fi 环境下高码率与 4K 画质自动回退到 1080P。注意：运营商可能不再把这类流量识别为定向免流，导致消耗通用流量。</string>
     <string name="half_screen_quality_title">视频半屏清晰度</string>
     <string name="half_screen_quality_summary">设置视频半屏播放时的清晰度（当前：%1$s）。若选择非默认档位将拦截半屏低画质预加载并强制锁定清晰度。</string>
     <string name="half_screen_quality_dialog_title">选择视频半屏清晰度</string>
@@ -77,6 +77,8 @@
     <string name="purify_share_summary">移除分享链接中的追踪参数，保留分页与评论定位等必要信息。</string>
     <string name="full_number_format_title">完整数字显示</string>
     <string name="full_number_format_summary">在“我的”和空间页显示完整的播放与统计数字，禁用单位缩写。</string>
+    <string name="space_fix_title">修复已注销用户主页</string>
+    <string name="space_fix_summary">打开已注销、被封禁或被屏蔽账号的空间页时，使用公开接口补全页面，使其可以正常显示。</string>
     <string name="unlock_comment_gif_title">评论区 GIF 解锁</string>
     <string name="unlock_comment_gif_summary">恢复评论区 GIF 缩略图播放，并移除图片右上角的大会员专属角标。</string>
 
@@ -166,6 +168,8 @@
     <string name="startup_block_teenagers_summary">检测并自动关闭青少年模式提醒弹窗。</string>
     <string name="block_update_title">禁止 App 检查更新</string>
     <string name="block_update_summary">拦截应用内更新检查，避免弹出版本更新提示。</string>
+    <string name="block_p2p_title">阻止 P2P / PCDN</string>
+    <string name="block_p2p_summary">禁止客户端把本机作为 P2P / PCDN 节点参与点播与直播的数据分发，避免占用上行带宽。重启哔哩哔哩后生效。</string>
 
     <!-- 主页 -->
     <string name="home_recommend_title_keyword_title">标题关键词屏蔽</string>
@@ -514,6 +518,9 @@
     <string name="custom_theme_summary">在 Bilibili 主题列表中加入自定义主色主题；修改后重新进入主题页即可生效。</string>
     <string name="custom_theme_color_title">自制主题颜色</string>
     <string name="custom_theme_color_summary">当前颜色：%1$s</string>
+    <string name="custom_theme_color_follow_system">已跟随系统取色，手动颜色不生效</string>
+    <string name="custom_theme_monet_title">跟随系统取色（莫奈）</string>
+    <string name="custom_theme_monet_summary">用系统壁纸取色（Android 12+）作为自制主题主色。开启后手动颜色不生效；更换壁纸后需重启哔哩哔哩。</string>
     <string name="custom_theme_color_dialog_title">自制主题颜色</string>
     <string name="custom_theme_color_dialog_message">请输入 6 位十六进制颜色，例如 FB7299。</string>
     <string name="custom_theme_color_invalid">请输入有效的 6 位十六进制颜色。</string>
@@ -586,7 +593,9 @@
     <string name="framework_gate_title">当前环境不受支持</string>
     <string name="framework_gate_blocked_message">哔哩增强仅支持在 LSPosed、NPatch、Vector 环境下使用，当前环境不在支持范围内。</string>
     <string name="framework_gate_root_title">需要 Root 权限</string>
-    <string name="framework_gate_root_message">LSPosed 环境需授予哔哩增强 Root 权限后才能使用，请在授权管理（Magisk / KernelSU / APatch）中允许。</string>
+    <string name="framework_gate_root_message">LSPosed 环境需授予 BBZQ Root 权限后才能使用，请在授权管理（Magisk / KernelSU / APatch）中允许。</string>
+    <string name="framework_gate_root_guide_message">LSPosed 环境下，BBZQ 需要 Root 权限。点击「继续」后，请在授权管理（Magisk / KernelSU / APatch）弹出的请求中选择允许；若没有弹出请求，请确认 BBZQ 未被加入排除列表。</string>
+    <string name="framework_gate_continue">继续</string>
     <string name="framework_gate_retry">重试</string>
     <string name="framework_gate_exit">离开</string>
     <string name="component_pool_item_format">%1$s（%2$d 个模块）</string>

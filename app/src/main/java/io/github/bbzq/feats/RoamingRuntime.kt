@@ -16,6 +16,7 @@ import io.github.bbzq.feats.hook.PgcActivityPopupHook
 import io.github.bbzq.feats.hook.PowerSaveHook
 import io.github.bbzq.feats.hook.AccessKeyHook
 import io.github.bbzq.feats.hook.ChronosPromotionHook
+import io.github.bbzq.feats.hook.CourseIntroCrashGuardHook
 import io.github.bbzq.feats.hook.CustomThemeHook
 import io.github.bbzq.feats.hook.CustomCdnHook
 import io.github.bbzq.feats.hook.DownloadThreadHook
@@ -40,6 +41,7 @@ import io.github.bbzq.feats.hook.SeaBangumiSearchHook
 import io.github.bbzq.feats.hook.SeaBangumiSubtitleHook
 import io.github.bbzq.feats.hook.RewardAdHook
 import io.github.bbzq.feats.hook.SettingHook
+import io.github.bbzq.feats.hook.SpaceFixHook
 import io.github.bbzq.feats.hook.ShareHook
 import io.github.bbzq.feats.hook.SkipVideoAdHook
 import io.github.bbzq.feats.hook.SkipVideoAdProgressHook
@@ -75,6 +77,7 @@ import io.github.bbzq.feats.hook.VideoEndRecommendHook
 import io.github.bbzq.feats.hook.mbgeb.LiveBackupUrlHook
 import io.github.bbzq.feats.hook.mbgeb.LiveQualityHook
 import io.github.bbzq.feats.hook.mbgeb.P2pDisableHook
+import io.github.bbzq.feats.hook.P2pBlockHook
 import io.github.bbzq.feats.hook.PageFontScaleHook
 import io.github.bbzq.feats.symbol.BiliHookSymbols
 import io.github.bbzq.feats.symbol.BiliSymbolResolver
@@ -194,6 +197,7 @@ object RoamingRuntime {
 
             ProcessScope.MAIN -> listOf(
                 ::DaggerCircularDependencyFixHook,
+                ::CourseIntroCrashGuardHook,
                 ::SettingHook,
                 ::SplashAdHook,
                 ::SplashAutoNightHook,
@@ -230,6 +234,7 @@ object RoamingRuntime {
                 ::VideoQualityHook,
                 ::FakeWifiHook,
                 ::CustomCdnHook,
+                ::P2pBlockHook,
                 ::ChronosPromotionHook,
                 ::PgcActivityPopupHook,
                 ::AiDeclaredVideoHook,
@@ -242,6 +247,7 @@ object RoamingRuntime {
                 ::BlockUpdateHook,
                 ::VideoCommentHook,
                 ::FullNumberFormatHook,
+                ::SpaceFixHook,
                 ::MineProfileHook,
                 ::CustomThemeHook,
                 ::BlockActivityMetaStickerHook,

@@ -67,6 +67,8 @@
     <string name="purify_share_summary">移除分享連結中的追蹤參數，保留分頁與評論定位等必要資訊。</string>
     <string name="full_number_format_title">完整數字顯示</string>
     <string name="full_number_format_summary">在「我的」和空間頁顯示完整的播放與統計數字，不使用單位縮寫。</string>
+    <string name="space_fix_title">修復已註銷用戶主頁</string>
+    <string name="space_fix_summary">開啟已註銷、被封禁或被封鎖帳號的空間頁時，使用公開介面補全頁面，使其可以正常顯示。</string>
     <string name="unlock_comment_gif_title">評論區 GIF 解鎖</string>
     <string name="unlock_comment_gif_summary">恢復評論區 GIF 縮圖播放，並移除圖片右上角的大會員專屬角標。</string>
     <string name="story_video_default_launch_title">啟動進入直式影片</string>
@@ -142,6 +144,8 @@
     <string name="startup_block_teenagers_summary">偵測並自動關閉青少年模式提醒彈窗。</string>
     <string name="block_update_title">禁止 App 檢查更新</string>
     <string name="block_update_summary">攔截應用程式內的更新檢查，避免彈出版本更新提示。</string>
+    <string name="block_p2p_title">阻止 P2P / PCDN</string>
+    <string name="block_p2p_summary">禁止用戶端把本機作為 P2P / PCDN 節點參與點播與直播的資料分發，避免佔用上行頻寬。重啟嗶哩嗶哩後生效。</string>
     <string name="home_recommend_title_keyword_title">標題關鍵字屏蔽</string>
     <string name="home_recommend_title_keyword_empty_summary">尚未設定關鍵字。開啟首頁卡片過濾後，標題包含關鍵字的推薦會被過濾。</string>
     <string name="home_recommend_title_keyword_enabled_summary">已設定 %1$d 個關鍵字：%2$s</string>
@@ -474,6 +478,9 @@
     <string name="custom_theme_summary">在嗶哩嗶哩主題列表中加入自訂主色的主題；修改後重新進入主題頁即可生效。</string>
     <string name="custom_theme_color_title">自製主題顏色</string>
     <string name="custom_theme_color_summary">目前顏色：%1$s</string>
+    <string name="custom_theme_color_follow_system">已跟隨系統取色，手動顏色不生效</string>
+    <string name="custom_theme_monet_title">跟隨系統取色（莫奈）</string>
+    <string name="custom_theme_monet_summary">以系統桌布取色（Android 12+）作為自製主題主色。開啟後手動顏色不生效；更換桌布後需重啟嗶哩嗶哩。</string>
     <string name="custom_theme_color_dialog_title">自製主題顏色</string>
     <string name="custom_theme_color_dialog_message">請輸入 6 位十六進位顏色，例如 FB7299。</string>
     <string name="custom_theme_color_invalid">請輸入有效的 6 位十六進位顏色。</string>
@@ -544,7 +551,9 @@
     <string name="framework_gate_title">目前環境不受支援</string>
     <string name="framework_gate_blocked_message">嗶哩增強僅支援在 LSPosed、NPatch、Vector 環境下使用，目前環境不在支援範圍內。</string>
     <string name="framework_gate_root_title">需要 Root 權限</string>
-    <string name="framework_gate_root_message">LSPosed 環境需授予嗶哩增強 Root 權限後才能使用，請在授權管理（Magisk / KernelSU / APatch）中允許。</string>
+    <string name="framework_gate_root_message">LSPosed 環境需授予 BBZQ Root 權限後才能使用，請在授權管理（Magisk / KernelSU / APatch）中允許。</string>
+    <string name="framework_gate_root_guide_message">LSPosed 環境下，BBZQ 需要 Root 權限。點擊「繼續」後，請在授權管理（Magisk / KernelSU / APatch）彈出的請求中選擇允許；若沒有彈出請求，請確認 BBZQ 未被加入排除清單。</string>
+    <string name="framework_gate_continue">繼續</string>
     <string name="framework_gate_retry">重試</string>
     <string name="framework_gate_exit">離開</string>
     <string name="component_pool_item_format">%1$s（%2$d 個模組）</string>

@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.view.View
 import android.view.ViewGroup
+import android.view.ViewTreeObserver
 import android.view.WindowInsetsController
 import android.view.WindowManager
 import android.widget.TextView
@@ -17,14 +18,22 @@ import io.github.bbzq.feats.RoamingEnv
 import io.github.bbzq.feats.findClassOrNull
 import io.github.bbzq.feats.hookAfter
 import io.github.bbzq.feats.hookBefore
+import java.lang.ref.WeakReference
+import java.lang.reflect.Method
 import java.lang.reflect.Modifier
+import java.lang.reflect.Proxy
+import java.util.Collections
+import java.util.WeakHashMap
 
 class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
-    private var currentVideoDetailActivity: java.lang.ref.WeakReference<Activity>? = null
-
-    /** 已挂过手势监听器的 decor 视图，弱引用避免持有 Activity 的 decor 泄漏。 */
-    private val installedGestureListeners =
-        java.util.Collections.newSetFromMap(java.util.WeakHashMap<View, Boolean>())
+    private var currentVideoDetailActivity: WeakReference<Activity>? = null
+    private val gestureExclusionAttached = Collections.synchronizedMap(WeakHashMap<View, Boolean>())
+    private val globalLayoutAttached = Collections.synchronizedMap(WeakHashMap<View, Boolean>())
+    private val hookedInitialClasses = Collections.synchronizedSet(HashSet<String>())
+    @Volatile
+    private var serviceSchemaLogged = false
+    @Volatile
+    private var cachedNoOpFunction2: Any? = null
 
     override fun startHook() {
         if (env.processName != env.packageName) return
@@ -35,7 +44,7 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
             override fun onActivityStarted(activity: Activity) = Unit
             override fun onActivityResumed(activity: Activity) {
                 if (isVideoDetailActivity(activity) || isStoryActivity(activity)) {
-                    currentVideoDetailActivity = java.lang.ref.WeakReference(activity)
+                    currentVideoDetailActivity = WeakReference(activity)
                     if (ModuleSettings.isPlayerTransparentStatusBarEnabled(prefs)) {
                         applyTransparentStatusBar(activity)
                     }
@@ -98,12 +107,13 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
             runCatching {
                 val decor = activity.window?.decorView ?: return@runCatching
                 decor.systemGestureExclusionRects = emptyList<Rect>()
-                // 本方法会在每次 resume 与 configuration change 时调用，
-                // 不能重复挂监听器：decor 每次布局都会回调全部监听器，会随时间累积。
-                if (!installedGestureListeners.add(decor)) return@runCatching
-                decor.addOnLayoutChangeListener { view, _, _, _, _, _, _, _, _ ->
-                    if (view.systemGestureExclusionRects.isNotEmpty()) {
-                        view.systemGestureExclusionRects = emptyList<Rect>()
+                synchronized(gestureExclusionAttached) {
+                    if (gestureExclusionAttached.containsKey(decor)) return@runCatching
+                    gestureExclusionAttached[decor] = true
+                }
+                decor.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ ->
+                    if (decor.systemGestureExclusionRects.isNotEmpty()) {
+                        decor.systemGestureExclusionRects = emptyList<Rect>()
                     }
                 }
             }
@@ -114,155 +124,181 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
      * 针对 9.0.0 ~ 9.15.0 以及双轨运行时保留的传统 Widget（GeminiPlayerFullStoryWidget / GeminiPlayerFullscreenWidget）
      */
     private fun installLegacyStoryWidgetHook() {
-        // 1. GeminiPlayerFullStoryWidget: 橫屏短視頻/看一看入口
-        runCatching {
-            val storyWidgetClass = classLoader.findClassOrNull("com.bilibili.app.gemini.player.widget.story.GeminiPlayerFullStoryWidget")
-            if (storyWidgetClass != null) {
-                // Hook 構造函數，實例化時即刻隱藏並物理收縮
-                storyWidgetClass.declaredConstructors.forEach { constructor ->
-                    env.hookAfter(constructor) { param ->
-                        if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
-                            (param.thisObject as? View)?.let { view ->
-                                view.visibility = View.GONE
-                                hideViewPhysically(view)
-                            }
-                        }
-                    }
-                }
-
-                // Hook 所有返回 Boolean 的無參方法（如判斷是否允許顯示 story 的開關 m91790H 等）
-                storyWidgetClass.declaredMethods
-                    .filter {
-                        !Modifier.isStatic(it.modifiers) &&
-                            it.parameterTypes.isEmpty() &&
-                            (it.returnType == java.lang.Boolean.TYPE || it.returnType == java.lang.Boolean::class.java)
-                    }
-                    .forEach { method ->
-                        env.hookBefore(method) { param ->
-                            if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
-                                param.result = false
-                            }
-                        }
-                    }
+        LEGACY_STORY_WIDGET_CLASSES.forEach { className ->
+            runCatching {
+                val widgetClass = classLoader.findClassOrNull(className) ?: return@runCatching
+                hookLegacyWidgetClass(widgetClass)
+            }.onFailure {
+                log("PlayerUi: installLegacyStoryWidgetHook ($className) failed", it)
             }
-        }.onFailure {
-            log("PlayerUi: installLegacyStoryWidgetHook (FullStory) failed", it)
-        }
-
-        // 2. GeminiPlayerFullscreenWidget: 豎屏模式下全屏轉 Story 入口
-        runCatching {
-            val fullscreenWidgetClass = classLoader.findClassOrNull("com.bilibili.app.gemini.player.widget.story.GeminiPlayerFullscreenWidget")
-            if (fullscreenWidgetClass != null) {
-                fullscreenWidgetClass.declaredMethods
-                    .filter {
-                        !Modifier.isStatic(it.modifiers) &&
-                            it.parameterTypes.isEmpty() &&
-                            (it.returnType == java.lang.Boolean.TYPE || it.returnType == java.lang.Boolean::class.java)
-                    }
-                    .forEach { method ->
-                        env.hookBefore(method) { param ->
-                            if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
-                                param.result = false
-                            }
-                        }
-                    }
-            }
-        }.onFailure {
-            log("PlayerUi: installLegacyStoryWidgetHook (FullscreenWidget) failed", it)
         }
     }
 
+    private fun hookLegacyWidgetClass(widgetClass: Class<*>) {
+        // 只隐藏覆写 setVisibility 的看一看控件；GeminiPlayerFullscreenWidget 是普通全屏按钮，只压制它的看一看跳转。
+        widgetClass.declaredMethods
+            .filter { it.name == "setVisibility" && it.parameterTypes.contentEquals(arrayOf(Int::class.javaPrimitiveType)) }
+            .forEach { method ->
+                env.hookBefore(method) { param ->
+                    if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
+                        param.args[0] = View.GONE
+                    }
+                }
+            }
+
+        // getMembersInjector 等继承而来的契约方法不能强制，否则宿主会跳过依赖注入。
+        widgetClass.declaredMethods
+            .filter {
+                !Modifier.isStatic(it.modifiers) &&
+                    it.parameterTypes.isEmpty() &&
+                    (it.returnType == java.lang.Boolean.TYPE || it.returnType == java.lang.Boolean::class.java) &&
+                    PlayerPortraitControlPolicy.isSafeLegacyWidgetBooleanMethod(it.name) &&
+                    !PlayerPortraitControlPolicy.overridesInheritedMethod(it)
+            }
+            .forEach { method ->
+                env.hookBefore(method) { param ->
+                    if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
+                        param.result = false
+                    }
+                }
+            }
+    }
+
     /**
-     * 針對 9.17.0+ / 9.18.0 等 Theseus2 Compose 架構的看一看與豎屏控制項
+     * 针对 9.17.0+ / 9.18.0 等 Theseus2 Compose 架构的看一看与竖屏控制项。
+     * 通过 StoryEntranceService 的类型签名动态识别状态与入口方法，避免硬编码单字母混淆名导致崩溃。
      */
     private fun installComposeStoryHook() {
-        // 1. Hook TheseusStoryEntranceInitial 構造函數 (Long?, boolean)
-        // 將 playerStoryControlsEnabled (args[1]) 強制置為 false
+        val serviceClass = STORY_ENTRANCE_SERVICE_CANDIDATES
+            .firstNotNullOfOrNull { classLoader.findClassOrNull(it) } ?: return
+
+        discoverAndHookInitialConfigFromService(serviceClass)
+
         runCatching {
-            val initialClass = classLoader.findClassOrNull("com.bilibili.ship.theseus2.united.page.story.S")
-            if (initialClass != null) {
-                initialClass.declaredConstructors.forEach { constructor ->
-                    val paramTypes = constructor.parameterTypes
-                    if (paramTypes.size >= 2 && (paramTypes[1] == java.lang.Boolean.TYPE || paramTypes[1] == java.lang.Boolean::class.java)) {
-                        env.hookBefore(constructor) { param ->
-                            if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
-                                param.args[1] = false
-                            }
+            serviceClass.declaredConstructors.forEach { constructor ->
+                env.hookAfter(constructor) { param ->
+                    val instance = param.thisObject ?: return@hookAfter
+                    logStoryServiceSchemaOnce(instance.javaClass)
+                }
+            }
+        }.onFailure {
+            log("PlayerUi: installComposeStoryHook (StoryEntranceService ctor) failed", it)
+        }
+
+        hookStoryEntranceServiceMethods(serviceClass)
+    }
+
+    private fun discoverAndHookInitialConfigFromService(serviceClass: Class<*>) {
+        val fieldTypes = serviceClass.declaredFields.mapTo(HashSet()) { it.type }
+        val candidateTypes = LinkedHashSet<Class<*>>()
+        serviceClass.declaredConstructors.forEach { ctor ->
+            ctor.parameterTypes.filterTo(candidateTypes) { it in fieldTypes }
+        }
+        candidateTypes.forEach { candidate ->
+            if (candidate == serviceClass || candidate.isPrimitive || candidate.isInterface ||
+                !PlayerPortraitControlPolicy.isHostClassName(candidate.name) ||
+                !hookedInitialClasses.add(candidate.name)
+            ) return@forEach
+            candidate.declaredConstructors.forEach { ctor ->
+                val paramNames = ctor.parameterTypes.map { it.name }
+                if (PlayerPortraitControlPolicy.isStoryInitialConfigConstructor(paramNames)) {
+                    val flagIndex = paramNames.indexOfFirst { it == "boolean" || it == "java.lang.Boolean" }
+                    env.hookBefore(ctor) { param ->
+                        if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs) && param.args.getOrNull(flagIndex) is Boolean) {
+                            param.args[flagIndex] = false
                         }
                     }
+                    log("PlayerUi: hooked StoryEntrance initial config ${candidate.name}(${paramNames.joinToString(",")})")
                 }
             }
-        }.onFailure {
-            log("PlayerUi: installComposeStoryHook (Initial) failed", it)
         }
+    }
 
-        // 2. Hook StoryEntranceService:
-        // 在其構造完成後，將內部可見性狀態 MutableState 與 boolean 開關全數壓制為 false
+    private fun hookStoryEntranceServiceMethods(serviceClass: Class<*>) {
         runCatching {
-            val serviceClass = classLoader.findClassOrNull("com.bilibili.ship.theseus2.united.page.story.StoryEntranceService")
-            if (serviceClass != null) {
-                serviceClass.declaredConstructors.forEach { constructor ->
-                    env.hookAfter(constructor) { param ->
-                        if (!ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) return@hookAfter
-                        val instance = param.thisObject ?: return@hookAfter
-                        suppressStoryEntranceServiceStates(instance)
-                    }
-                }
-            }
-        }.onFailure {
-            log("PlayerUi: installComposeStoryHook (StoryEntranceService) failed", it)
-        }
+            val function2Class = classLoader.findClassOrNull("kotlin.jvm.functions.Function2")
+            var hookedCount = 0
+            serviceClass.declaredMethods.forEach { method ->
+                if (Modifier.isStatic(method.modifiers)) return@forEach
+                val paramNames = method.parameterTypes.map { it.name }
+                val returnName = method.returnType.name
 
-        // 3. Hook 所有依賴 StoryEntranceService 的 Function0 / Composable Lambda 提供者
-        // 當 Compose 控制容器查詢 storyControlUi / fullscreenControlUi 時直接返回 null
-        runCatching {
-            val lambdaClasses = listOf(
-                "com.bilibili.ship.theseus2.united.page.story.e",
-                "com.bilibili.ship.theseus2.united.page.story.f",
-                "com.bilibili.ship.theseus2.united.page.story.i",
-                "com.bilibili.ship.theseus2.united.page.story.j",
-            )
-            lambdaClasses.forEach { className ->
-                val clazz = classLoader.findClassOrNull(className) ?: return@forEach
-                clazz.declaredMethods
-                    .filter { it.name == "invoke" }
-                    .forEach { method ->
+                when {
+                    PlayerPortraitControlPolicy.isComposableMethodSignature(returnName, paramNames) -> {
                         env.hookBefore(method) { param ->
                             if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
                                 param.result = null
                             }
                         }
+                        hookedCount++
                     }
-            }
-        }.onFailure {
-            log("PlayerUi: installComposeStoryHook (Lambdas) failed", it)
-        }
-    }
 
-    private fun suppressStoryEntranceServiceStates(instance: Any) {
-        runCatching {
-            instance.javaClass.declaredFields.forEach { field ->
-                field.isAccessible = true
-                val fieldType = field.type
-                if (fieldType == java.lang.Boolean.TYPE) {
-                    field.setBoolean(instance, false)
-                } else if (fieldType.name.contains("MutableState")) {
-                    val stateObj = field.get(instance) ?: return@forEach
-                    runCatching {
-                        val setValueMethod = stateObj.javaClass.methods.firstOrNull {
-                            it.name == "setValue" && it.parameterTypes.size == 1
+                    PlayerPortraitControlPolicy.isStoryFunction2Method(method.name, returnName) &&
+                        method.returnType.isInterface -> {
+                        val noOp = function2Class?.let(::getOrCreateNoOpFunction2)
+                        if (noOp != null && method.returnType.isInstance(noOp)) {
+                            env.hookAfter(method) { param ->
+                                if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs) && param.result != null) {
+                                    param.result = noOp
+                                }
+                            }
+                            hookedCount++
                         }
-                        setValueMethod?.invoke(stateObj, false)
+                    }
+
+                    method.parameterTypes.isEmpty() &&
+                        (method.returnType == java.lang.Boolean.TYPE || method.returnType == java.lang.Boolean::class.java) &&
+                        PlayerPortraitControlPolicy.isStoryServiceBooleanMethod(method.name) -> {
+                        env.hookBefore(method) { param ->
+                            if (ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
+                                param.result = false
+                            }
+                        }
+                        hookedCount++
                     }
                 }
             }
+            if (hookedCount > 0) {
+                log("PlayerUi: hooked $hookedCount StoryEntranceService method(s)")
+            }
+        }.onFailure {
+            log("PlayerUi: installComposeStoryHook (methods) failed", it)
+        }
+    }
+
+    private fun getOrCreateNoOpFunction2(function2Class: Class<*>): Any? {
+        cachedNoOpFunction2?.let { return it }
+        return runCatching {
+            val unitClass = classLoader.findClassOrNull("kotlin.Unit") ?: return null
+            val unitInstance = unitClass.getField("INSTANCE").get(null) ?: return null
+            Proxy.newProxyInstance(function2Class.classLoader, arrayOf(function2Class)) { proxy, method, args ->
+                when (method.name) {
+                    "invoke" -> unitInstance
+                    "toString" -> "BBZQNoOpStoryUi"
+                    "hashCode" -> System.identityHashCode(proxy)
+                    "equals" -> proxy === args?.getOrNull(0)
+                    else -> null
+                }
+            }.also { cachedNoOpFunction2 = it }
+        }.getOrNull()
+    }
+
+    private fun logStoryServiceSchemaOnce(serviceClass: Class<*>) {
+        if (serviceSchemaLogged) return
+        serviceSchemaLogged = true
+        runCatching {
+            val fields = serviceClass.declaredFields.joinToString(", ") { "${it.name}:${it.type.simpleName}" }
+            val methods = serviceClass.declaredMethods.joinToString(", ") {
+                "${it.name}(${it.parameterTypes.joinToString(",") { p -> p.simpleName }}):${it.returnType.simpleName}"
+            }
+            log("PlayerUi: StoryEntranceService schema fields=[$fields] methods=[$methods]")
         }
     }
 
     private fun schedulePlayerUiTuning(activity: Activity) {
         val decor = activity.window?.decorView ?: return
         applyTuningInternal(activity, decor)
-        installViewHierarchyListener(decor)
+        installGlobalLayoutWatcher(activity, decor)
         CONTROL_RECHECK_DELAYS_MS.forEach { delay ->
             decor.postDelayed({
                 if (!activity.isFinishing && !activity.isDestroyed && decor.isAttachedToWindow) {
@@ -272,20 +308,28 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
         }
     }
 
-    private fun installViewHierarchyListener(root: View) {
-        if (root !is ViewGroup) return
-        root.setOnHierarchyChangeListener(object : ViewGroup.OnHierarchyChangeListener {
-            override fun onChildViewAdded(parent: View?, child: View?) {
-                if (child != null && ModuleSettings.isHidePlayerPortraitControlEnabled(prefs)) {
-                    revealPortraitControls(child)
-                    if (child is ViewGroup) {
-                        installViewHierarchyListener(child)
-                    }
+    private fun installGlobalLayoutWatcher(activity: Activity, decor: View) {
+        synchronized(globalLayoutAttached) {
+            if (globalLayoutAttached.containsKey(decor)) return
+            globalLayoutAttached[decor] = true
+        }
+        val activityRef = WeakReference(activity)
+        val decorRef = WeakReference(decor)
+        val listener = object : ViewTreeObserver.OnGlobalLayoutListener {
+            override fun onGlobalLayout() {
+                val targetActivity = activityRef.get()
+                val targetDecor = decorRef.get()
+                if (targetActivity == null || targetDecor == null ||
+                    targetActivity.isFinishing || targetActivity.isDestroyed ||
+                    !targetDecor.isAttachedToWindow
+                ) {
+                    targetDecor?.viewTreeObserver?.takeIf { it.isAlive }?.removeOnGlobalLayoutListener(this)
+                    return
                 }
+                applyTuningInternal(targetActivity, targetDecor)
             }
-
-            override fun onChildViewRemoved(parent: View?, child: View?) = Unit
-        })
+        }
+        decor.viewTreeObserver.takeIf { it.isAlive }?.addOnGlobalLayoutListener(listener)
     }
 
     private fun applyTuningInternal(activity: Activity, decor: View) {
@@ -299,10 +343,13 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private fun revealPortraitControls(view: View) {
         if (isPortraitControl(view)) {
-            if (view.visibility != View.GONE) {
-                view.visibility = View.GONE
+            // 控件尚未完成依赖注入时 setVisibility 会抛异常，本轮跳过，下一轮布局再处理。
+            runCatching {
+                if (view.visibility != View.GONE) {
+                    view.visibility = View.GONE
+                }
+                hideViewPhysically(view)
             }
-            hideViewPhysically(view)
             return
         }
         if (view is ViewGroup) {
@@ -326,13 +373,22 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
     }
 
     private fun isPortraitControl(view: View): Boolean {
+        if (view === view.rootView) return false
         val className = view.javaClass.name
         if (PORTRAIT_CLASS_MARKERS.any { className.contains(it, ignoreCase = true) }) {
             return true
         }
 
+        if (view.id != View.NO_ID) {
+            val entry = runCatching { view.resources.getResourceEntryName(view.id) }
+                .getOrNull()?.lowercase()
+            if (entry != null && EXACT_PORTRAIT_IDS.contains(entry)) {
+                return true
+            }
+        }
+
         if (view is ViewGroup) {
-            if (className.startsWith("android.view.")) return false
+            if (PlayerPortraitControlPolicy.isProtectedContainerClassName(className)) return false
             if (view.childCount > 3 || (view.width > 300 && view.height > 300)) return false
         }
 
@@ -344,15 +400,6 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
         val text = (view as? TextView)?.text?.toString().orEmpty()
         if (text.isNotBlank() && PORTRAIT_DESCRIPTION_MARKERS.any { text.contains(it, ignoreCase = true) }) {
             return true
-        }
-
-        if (view.id != View.NO_ID) {
-            val entry = runCatching { view.resources.getResourceEntryName(view.id) }
-                .getOrNull()?.lowercase() ?: return false
-
-            if (EXACT_PORTRAIT_IDS.contains(entry)) {
-                return true
-            }
         }
         return false
     }
@@ -381,6 +428,14 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
 
     private companion object {
         private val CONTROL_RECHECK_DELAYS_MS = longArrayOf(50L, 200L, 500L, 1_000L, 2_000L, 3_500L)
+        private val LEGACY_STORY_WIDGET_CLASSES = listOf(
+            "com.bilibili.app.gemini.player.widget.story.GeminiPlayerFullStoryWidget",
+            "com.bilibili.app.gemini.player.widget.story.GeminiPlayerFullscreenWidget",
+        )
+        private val STORY_ENTRANCE_SERVICE_CANDIDATES = listOf(
+            "com.bilibili.ship.theseus2.united.page.story.StoryEntranceService",
+            "com.bilibili.p5797ship.theseus2.united.p5850page.story.StoryEntranceService",
+        )
         private val PORTRAIT_CLASS_MARKERS = listOf(
             "FullStoryWidget",
             "GeminiPlayerFullStoryWidget",
@@ -394,7 +449,6 @@ class PlayerUiHook(env: RoamingEnv) : BaseRoamingHook(env) {
             "切换竖屏",
             "切为竖屏",
             "竖屏全屏",
-            "展开全屏",
         )
         private val EXACT_PORTRAIT_IDS = setOf(
             "bbplayer_halfscreen_story",
