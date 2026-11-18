@@ -1,0 +1,126 @@
+name: Sync Upstream
+
+on:
+  schedule:
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: sync-upstream
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    outputs:
+      pushed: ${{ steps.push.outputs.pushed }}
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Merge upstream master
+        id: merge
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/HSSkyBoy/BBZQ.git
+          git fetch --no-tags upstream master
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "status=current" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if git merge --no-edit upstream/master; then
+            echo "status=merged" >> "$GITHUB_OUTPUT"
+          else
+            git merge --abort
+            echo "status=conflict" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set up JDK
+        if: steps.merge.outputs.status == 'merged'
+        uses: actions/setup-java@v5
+        with:
+          distribution: zulu
+          java-version: '21'
+          cache: gradle
+
+      - name: Setup Android SDK
+        if: steps.merge.outputs.status == 'merged'
+        uses: android-actions/setup-android@v4.0.1
+        with:
+          cmdline-tools-version: 14742923
+          packages: ''
+
+      - name: Install SDK 37
+        if: steps.merge.outputs.status == 'merged'
+        run: |
+          yes | sdkmanager --licenses > /dev/null 2>&1 || true
+          sdkmanager "platform-tools" "platforms;android-37.0" "build-tools;37.0.0" > /dev/null
+
+      - name: Verify compile
+        if: steps.merge.outputs.status == 'merged'
+        run: |
+          chmod +x ./gradlew
+          ./gradlew --no-daemon :app:compileReleaseKotlin
+
+      - name: Push master
+        id: push
+        if: steps.merge.outputs.status == 'merged'
+        run: |
+          git push origin HEAD:master
+          echo "pushed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Report failure
+        if: failure() || steps.merge.outputs.status == 'conflict'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          STATUS: ${{ steps.merge.outputs.status }}
+        run: |
+          set -euo pipefail
+          if [ "$STATUS" = "conflict" ]; then
+            reason="上游改动与本地提交冲突，自动合并已中止。"
+          elif [ "$STATUS" = "merged" ]; then
+            reason="上游已合并，但编译校验或推送失败，未完成同步。"
+          else
+            reason="同步流程执行失败。"
+          fi
+          body=$(cat <<EOF
+          $reason
+
+          - 运行记录：${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          - 本地处理：git fetch upstream && git merge upstream/master，解决后推送 master
+          EOF
+          )
+          number=$(gh issue list --state open --search '"上游同步失败" in:title' --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue comment "$number" --body "$body"
+          else
+            gh issue create --title "上游同步失败" --body "$body"
+          fi
+
+      - name: Close stale issue
+        if: success() && (steps.push.outcome == 'success' || steps.merge.outputs.status == 'current')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          number=$(gh issue list --state open --search '"上游同步失败" in:title' --json number --jq '.[0].number // empty')
+          if [ -n "$number" ]; then
+            gh issue close "$number" --comment "上游已重新同步成功。"
+          fi
+
+  release:
+    name: Build release APK
+    needs: sync
+    if: needs.sync.outputs.pushed == 'true'
+    uses: ./.github/workflows/ci.yml
+    with:
+      ref: master
+    secrets: inherit
